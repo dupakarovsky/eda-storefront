@@ -16,6 +16,62 @@ progress logs, real verification (curl/integration tests against live
 infrastructure, not assumption), and design decisions made explicitly and
 recorded rather than defaulted into.
 
+## Source material
+
+This system adapts _Event-Driven Architecture in Golang_ (Packt), by
+following the same bounded contexts and event flow rather than copying
+its code. Reference repository:
+
+**https://github.com/PacktPublishing/Event-Driven-Architecture-in-Golang**
+
+Each top-level folder in that repo (`ChapterNN/`) is a full snapshot of
+the codebase at that point in the book, not a diff. **`Chapter12/` is the
+final, most complete state** and is the one to check against for anything
+below — earlier chapters are incremental teaching snapshots, not
+independently authoritative.
+
+Findings already confirmed directly against `Chapter12/` (so later
+sessions don't need to re-clone and re-derive them):
+
+- **Real event dependency graph** (this is what `docs/adl/0001` is built
+  on): `stores` and `customers` are roots, publishing but consuming
+  nothing. `depot` and `baskets` both consume `stores`' catalog events
+  (`StoreCreated`, `ProductAdded`, etc.) to maintain a local cache.
+  `ordering` consumes `onBasketCheckedOut` (from `baskets`) and
+  `onShoppingListCompleted` (from `depot`'s `ShoppingList` aggregate) —
+  the one service with two upstream dependencies. `payments` consumes
+  `onOrderReadied`/`onOrderCanceled` (from `ordering`). `notifications`
+  and `search` both consume `ordering` + `customers` events (`search`
+  also consumes `stores`).
+- **`notifications` is fully stubbed in the book** — every actual
+  send method (`NotifyOrderCreated`, `NotifyOrderCanceled`,
+  `NotifyOrderReady`) is a literal `// not implemented` body. The event
+  wiring/lookup pattern is real; the actual notification delivery is not.
+  Project 8 in this roadmap completes this for real — it is not a port of
+  working book code.
+- **`search`'s real API surface is narrower than its name suggests** —
+  its proto only exposes `SearchOrders`/`GetOrder`. It's an order-history
+  read model enriched with cached customer/store/product data, not a
+  general catalog search engine, and has no full-text search (no
+  `tsvector`/`ILIKE` usage found).
+- **Dated dependency versions confirmed in `go.mod`**, underlying
+  `docs/adl/0003`: `go 1.18`, `pgx/v4`, `zerolog`, `chi` v5, `goose`,
+  core NATS (no JetStream), `grpc-gateway` v2.11, OpenTelemetry v1.10.
+- **Architecture**: a modular monolith originally (per the book's own
+  `docs/ADL/0002-use-a-modular-monolith-architecture.md`), later split
+  into the microservices structure this roadmap follows — `Chapter12/`
+  reflects the split state.
+- Every service already exposes REST + OpenAPI (`api.openapi.yaml`/
+  `api.swagger.json`) via grpc-gateway, and the book's root
+  `docker-compose.yml` fronts every service with an nginx reverse proxy —
+  both relevant when Project 6 (storefront) starts deciding what it talks
+  to and how.
+
+If a future session needs to verify something else against the book
+(an event payload shape, a specific handler's behavior), clone
+`Chapter12/` fresh rather than relying on memory of this list — it's a
+starting point, not a complete inventory of the source repo.
+
 ## What's different this time
 
 Both prior projects were single-process modular services. This system is
