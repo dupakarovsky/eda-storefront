@@ -72,3 +72,44 @@ publish helper.
 Scaffold `docker-compose.yml` (Postgres, NATS, a log volume) and
 `Makefile`; prove the whole kit end-to-end via a trivial throwaway service
 that uses every `foundation` package at once.
+
+## Phase 1 Summary — COMPLETE
+
+**Status:** Complete
+
+### What Was Built
+
+Initialized the `go.work` workspace and the `foundation` Go module
+(`github.com/dupakarovsky/eda-storefront/foundation`, Go 1.25.0). Ported
+`logging` (the `slog`-based `multiHandler` fanning out to a text console
+handler and a JSON file handler) and `postgres` (`Config`, `SSLMode`,
+`NewPool`) in from `court-reservation` unchanged at the code level — only
+their import paths moved. Added `pgx/v5/pgxpool` as a real dependency and
+confirmed `go build ./...` succeeds. Validated the workspace wiring itself
+with a throwaway `tmp-smoketest` module that imported `foundation/logging`
+purely through `go.work`'s local `use` resolution, with no `go get` and no
+`replace` directive — confirmed both the console and file log sinks
+produce correct output, then removed the scaffold module and dropped it
+from `go.work`.
+
+### Issues Found & Resolved
+
+None. Both ported packages were already generic (no `court-reservation`
+domain coupling), so this phase was pure setup and verification — no
+debugging required.
+
+### State at End of Phase 1
+
+`foundation/logging` and `foundation/postgres` are in place, compiling,
+and proven importable across a module boundary via `go.work`. `foundation`
+still has empty `shutdown/`, `http/`, `config/`, `nats/` directories
+awaiting their phases. No `docker-compose.yml`, `Makefile`, or `docs/`
+changes yet — those come in Phase 6 and at project close, respectively.
+
+### Carried Into Phase 2
+
+Phase 2 rebuilds `config` from `court-reservation`'s `flag`-based CLI
+parsing into `envconfig` + `.env`, per ADL 0003. The existing `config.go`
+(server/logger/db struct groups, `loadConfig`, `addr()`) is the reference
+point for what fields need to survive the migration — the shape of the
+`config` struct stays useful, only how it's populated changes.
