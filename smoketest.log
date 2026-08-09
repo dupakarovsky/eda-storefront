@@ -1,0 +1,1 @@
+{"time":"2026-08-09T17:02:22.633837072-03:00","level":"INFO","source":{"function":"main.main","file":"/home/gustavo/git/golang/projects/ddd/eda-storefront/tmp-smoketest/main.go","line":16},"msg":"foundation import resolved across workspace boundary"}
