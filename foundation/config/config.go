@@ -1,6 +1,12 @@
 package config
 
-import "time"
+import (
+	"fmt"
+	"time"
+
+	"github.com/joho/godotenv"
+	"github.com/kelseyhightower/envconfig"
+)
 
 // Config holds the three distincts configuration structs: one for
 // the server, one for the logger and one for the database
@@ -42,4 +48,24 @@ type DBConfig struct {
 	MinConns        int           `envconfig:"DB_MIN_CONNS" default:"5"`
 	MaxConnLifetime time.Duration `envconfig:"DB_MAX_CONNS_LIFETIME" default:"1h"`
 	MaxConnIdleTime time.Duration `envconfig:"DB_MAX_CONNS_IDLE_TIME" default:"30m"`
+}
+
+// Load reads the .env file and injects the key/value pairs using os.Setenv
+// Missing .env file outputs a print and is ignored. In production we set environmental
+// variables and don't rely on .env file
+func Load() (Config, error) {
+
+	if err := godotenv.Load(); err != nil {
+		fmt.Println("no .env file found, relying on real environmental variables")
+	}
+
+	// envconfig.Process is the population step. First agument is the prefix (passing "APP",
+	// would result in "APP_SRV_PORT" insted of "SRV_PORT"). It walks the Config fields via
+	// reflection, matching each tag to an environmental variable.
+	var cfg Config
+	if err := envconfig.Process("", &cfg); err != nil {
+		return Config{}, fmt.Errorf("processing config: %w", err)
+	}
+
+	return cfg, nil
 }
