@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -68,4 +69,10 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// Addr returns the joinded string of the Host and Port fields, which is
+// compatible with IPV4 and IPV6
+func (s ServerConfig) Addr() string {
+	return net.JoinHostPort(s.Host, s.Port)
 }
