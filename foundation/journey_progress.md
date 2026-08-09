@@ -113,3 +113,47 @@ parsing into `envconfig` + `.env`, per ADL 0003. The existing `config.go`
 (server/logger/db struct groups, `loadConfig`, `addr()`) is the reference
 point for what fields need to survive the migration — the shape of the
 `config` struct stays useful, only how it's populated changes.
+
+## Phase 2 Summary — COMPLETE
+
+**Status:** Complete
+
+### What Was Built
+
+Added `foundation/config`, replacing `court-reservation`'s flag-based
+`config` struct with `Config` (exported `ServerConfig`, `LoggerConfig`,
+`DBConfig` sub-structs, tagged for `envconfig`). `Load()` combines
+`godotenv.Load()` (best-effort `.env` ingestion into the real environment,
+non-fatal if absent) with `envconfig.Process` to populate `Config`, returning
+an error on malformed values rather than crashing. `Addr()` moved from a
+free function to a method on `ServerConfig`. Verified end-to-end via a
+throwaway `tmp-smoketest` module: confirmed clean fallback to defaults with
+no `.env` present, then confirmed `.env` overrides (`SRV_PORT`,
+`LOG_TERM_LEVEL`, `DB_USER`) applied correctly once the file was placed at
+the process's actual working directory.
+
+### Issues Found & Resolved
+
+`godotenv.Load()` resolves `.env` relative to the process's runtime working
+directory, not the source package's location — `go run ./tmp-smoketest/`
+still executes with the shell's CWD, so `.env` had to live at the workspace
+root, not inside `tmp-smoketest/`, for it to be picked up. Not a bug; noted
+as relevant again once real services run inside containers with their own
+`WORKDIR` in Phase 6.
+
+### State at End of Phase 2
+
+`foundation/config` is complete, compiling, and proven to load from both a
+real `.env` file and pure defaults. `foundation/shutdown`, `foundation/http`,
+`foundation/nats` remain empty, awaiting their phases. `tmp-smoketest`
+served its purpose and can be removed before Phase 3 (or repurposed —
+your call).
+
+### Carried Into Phase 3
+
+Phase 3 extracts `court-reservation`'s inline `run()` graceful-shutdown
+logic out of `main.go` into a reusable `foundation/shutdown` harness. The
+existing `run(cfg, logger, handler)` function — signal channel, error
+channel, `select` on shutdown vs. listener failure, timeout-bounded
+`srv.Shutdown` — is the reference point for what needs to generalize into
+a harness any service's `main.go` can call, not just `court-reservation`'s.
