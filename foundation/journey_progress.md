@@ -157,3 +157,70 @@ existing `run(cfg, logger, handler)` function — signal channel, error
 channel, `select` on shutdown vs. listener failure, timeout-bounded
 `srv.Shutdown` — is the reference point for what needs to generalize into
 a harness any service's `main.go` can call, not just `court-reservation`'s.
+
+## Phase 3 Summary — COMPLETE
+
+**Status:** Complete
+
+### What Was Built
+
+Added `foundation/shutdown`, exposing `Run(logger *slog.Logger, srv *http.Server,
+shutdownTimeout time.Duration) error`. Unlike `court-reservation`'s original
+`run(cfg, logger, handler)`, `Run` doesn't build the `*http.Server` itself —
+callers construct and configure their own server (`Addr`, `Handler`, timeouts)
+and hand it in already-built, since server construction is inherently
+service-specific while the shutdown sequence itself is not. Internally, `Run`
+ports `court-reservation`'s pattern directly: `ListenAndServe` runs in its own
+goroutine against an error channel, raced in a `select` against an
+`os/signal`-driven channel (SIGINT/SIGTERM), and once a signal arrives, a
+fresh `shutdownTimeout`-bounded context drives `srv.Shutdown(ctx)`, falling
+back to `srv.Close()` if it doesn't complete in time. Verified end-to-end via
+`tmp-smoketest`: confirmed the server starts and serves a real request via
+curl, confirmed `Ctrl+C` produces the full log sequence (start → signal
+received → listener goroutine terminated → shutdown complete) and a prompt,
+clean process exit.
+
+### Issues Found & Resolved
+
+None — this was a direct, working port of an already-proven pattern.
+
+### Design Questions Deferred (Open — Revisit in Project 1)
+
+Two questions came up during this phase that need a real service to test
+against rather than a speculative answer now, per the project's
+no-stubbing discipline:
+
+1. **Multi-listener shutdown.** The source book's `internal/waiter` uses
+   `errgroup` + `signal.NotifyContext` to wait on multiple concurrent
+   `WaitFunc`s at once (HTTP, gRPC, NATS stream), which is more granular
+   in how it can express a shutdown _sequence_ (grace period, then a timed
+   force-close) than the book's context-cancellation-only approach, but
+   is only proven here for a single `*http.Server`. `stores` (HTTP +
+   NATS publish only) won't exercise this gap; `depot`/`baskets`
+   (Project 2, HTTP + a concurrent NATS subscription loop) is the first
+   real candidate. Revisit then — possibly a hybrid: our explicit
+   `Shutdown`/`Close` sequencing, generalized to run per-listener via
+   something `errgroup`-shaped.
+2. **A typed `Server` wrapper.** Currently `Run` takes a bare `*http.Server`
+   and logs only what `*http.Server` itself exposes. Once a service is
+   actually running in a container, it'd be worth wrapping it in our own
+   type (embedding `*http.Server`, adding `Service()`, `Hostname()`,
+   `ShutdownTimeout()`) so `Run`'s startup log line can identify which
+   service and host it's running as. Deferred rather than guessed now,
+   since the right fields are clearer once there's a real containerized
+   service to shape them against.
+
+### State at End of Phase 3
+
+`foundation/shutdown` is complete, compiling, and proven via `tmp-smoketest`
+against a real single-server lifecycle. `foundation/logging`,
+`foundation/postgres`, `foundation/config`, and `foundation/shutdown` are all
+done. `foundation/http` (Router/Middleware) and `foundation/nats` remain
+empty, awaiting Phases 4 and 5.
+
+### Carried Into Phase 4
+
+Phase 4 ports `Router`/`Middleware` and the `Logging`/`Recovery`/`Timeout`
+middleware into `foundation/http`, as-is — no open design questions carried
+forward from this phase, since `Router` doesn't depend on anything `shutdown`
+does.
