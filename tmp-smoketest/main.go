@@ -18,6 +18,11 @@ func main() {
 	defer logFile.Close()
 
 	srv := &http.Server{Addr: ":8081"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "OK")
+	})
+	srv.Handler = mux
 
 	if err := shutdown.Run(logger, srv, 5*time.Second); err != nil {
 		fmt.Println("shutdown.Run returned an error:", err)
