@@ -38,7 +38,7 @@ func main() {
 	// instantiate a new publisher
 	pub := foundationnats.NewPublisher(js)
 
-	// define a new subject
+	// define a new subject to be published on the stream
 	subject := foundationnats.Subject("stores", "store", "created")
 
 	// publish to the stream and receive an acknowledgment

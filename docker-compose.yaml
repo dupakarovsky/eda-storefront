@@ -1,0 +1,36 @@
+services:
+    postgres:
+        image: postgres:17
+        container_name: eda-postgres
+        restart: unless-stopped
+        env_file:
+            - ./.postgres.env
+        ports:
+            - 127.0.0.1:5433:5432
+        volumes:
+            # local pg-data dir bound to the containers posgresql/data
+            - pg-data:/var/lib/postgresql/data
+        networks:
+            - eda-net
+
+    nats:
+        image: nats:2.12
+        container_name: eda-nats
+        restart: unless-stopped
+        # sets the JetStream store directory inside the container.
+        # this has to match the volume's mount target : /data
+        command: '--jetstream --http_port 8222 --store_dir /data'
+        ports:
+            - 127.0.0.1:4223:4222
+            - 127.0.0.1:8222:8222
+        volumes:
+            - nats-data:/data
+        networks:
+            - eda-net
+
+volumes:
+    pg-data:
+    nats-data:
+
+networks:
+    eda-net:

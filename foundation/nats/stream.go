@@ -14,6 +14,7 @@ func EnsureStream(ctx context.Context, js jetstream.JetStream, name string, subj
 	stream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:     name,
 		Subjects: subjects,
+		Storage:  jetstream.FileStorage,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ensuring stream %q: %w", name, err)

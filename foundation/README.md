@@ -1043,3 +1043,442 @@ publish, something like:
 placed after `ctx := context.Background()` and before the
 `pub := foundationnats.NewPublisher(js)` line. Give it a run with both fixes in
 and let me know what comes back.
+
+## Phase 6 Plan
+
+You're right to flag this, and your assumption is correct — the same principle
+applies to NATS JetStream, for the same underlying reason it applies to
+Postgres.
+
+By default, a NATS container's filesystem is exactly as ephemeral as Postgres's.
+Core NATS (fire-and-forget, no JetStream) never persisted anything to begin with
+— a subscriber had to be connected at publish time or it simply missed the
+message, full stop. That's actually one of the reasons ADL 0003 chose JetStream
+over core NATS: JetStream streams have a configurable storage type, and ours
+(`EnsureStream`'s `StreamConfig`) doesn't currently set `Storage` explicitly,
+which means it's defaulting to `FileStorage` rather than `MemoryStorage`. File
+storage writes each stream's messages to disk inside the container — but "inside
+the container" is the trap. Without a bind mount or named volume backing that
+path, "on disk" still means the container's writable layer, which
+`docker compose down` (or a crash, or an image rebuild) wipes out exactly like
+it would wipe an un-volumed Postgres data directory.
+
+So the fix is structurally identical for both services: give NATS a named volume
+mapped to its JetStream storage directory (typically `/data`, via the
+`-sd /data` flag or `jetstream { store_dir: /data }` in a config file), the same
+way Postgres gets a volume mapped to `/var/lib/postgresql/data`.
+
+This matters more here than it might in a typical toy setup, for a reason
+specific to your roadmap: Project 2 (`depot`/`baskets`) is the first real
+_consumer_ of the `STORES` stream, and JetStream's whole value proposition for
+that use case is replay — a consumer that starts up late (or restarts) can catch
+up on everything it missed, because the broker held onto it. If the stream's
+storage isn't actually durable across a container restart, you don't have that
+property yet — you'd have core NATS's fire-and-forget behavior wearing a
+JetStream costume, and wouldn't find out until Project 2 tried to rely on it and
+got nothing.
+
+Given that, I'd fold this into the Phase 6 plan rather than treat it as an
+afterthought — here's the revised step list:
+
+**Step 1 — `docker-compose.yml`** Postgres and NATS (JetStream, with an explicit
+`store_dir`), each with a named volume, plus the log volume.
+
+**Step 2 — `Makefile`** `up`, `down`, `logs`, `run` targets.
+
+**Step 3 — Smoke-test service skeleton** Wires `config`, `logging`, `postgres`,
+`nats` together.
+
+**Step 4 — Wire in HTTP + shutdown + NATS publish** Full six-package smoke test.
+
+**Step 5 — Durability verification (new)** Publish a message and write a row,
+`docker compose down` (not just stop the process — the container itself), bring
+the stack back up, and confirm both the Postgres row and the JetStream message
+are still there via a fresh consumer read. This is the step that actually proves
+the volumes work, not just that they're declared.
+
+**Step 6 — Full end-to-end verification** Curl, graceful shutdown via Ctrl+C,
+the rest of what we discussed.
+
+One thing worth deciding now rather than mid-step: do you want `EnsureStream` to
+keep leaving `Storage` unset (defaulting to file) with the explicit expectation
+that compose always supplies a volume, or would you rather make
+`StreamConfig.Storage: jetstream.FileStorage` explicit in the code itself so
+it's not an implicit default someone could accidentally lose track of later? I
+lean toward making it explicit — it costs one line and turns "durable by default
+configuration" into "durable by visible declaration," which fits the project's
+general discipline of not leaving important behavior to an unstated default (the
+same spirit as `pool.go`'s comment about only overriding `pgxpool`'s defaults
+when a value is actually supplied).
+
+Let me know if this revised step plan works, and your call on the `Storage`
+field question, and we'll start on Step 1.
+
+## PHASE 6 Plan
+
+By default, a NATS container's filesystem is exactly as ephemeral as Postgres's.
+Core NATS (fire-and-forget, no JetStream) never persisted anything to begin with
+— a subscriber had to be connected at publish time or it simply missed the
+message, full stop. That's actually one of the reasons ADL 0003 chose JetStream
+over core NATS: JetStream streams have a configurable storage type, and ours
+(`EnsureStream`'s `StreamConfig`) doesn't currently set `Storage` explicitly,
+which means it's defaulting to `FileStorage` rather than `MemoryStorage`. File
+storage writes each stream's messages to disk inside the container — but "inside
+the container" is the trap. Without a bind mount or named volume backing that
+path, "on disk" still means the container's writable layer, which
+`docker compose down` (or a crash, or an image rebuild) wipes out exactly like
+it would wipe an un-volumed Postgres data directory.
+
+So the fix is structurally identical for both services: give NATS a named volume
+mapped to its JetStream storage directory (typically `/data`, via the
+`-sd /data` flag or `jetstream { store_dir: /data }` in a config file), the same
+way Postgres gets a volume mapped to `/var/lib/postgresql/data`.
+
+This matters more here than it might in a typical toy setup, for a reason
+specific to your roadmap: Project 2 (`depot`/`baskets`) is the first real
+_consumer_ of the `STORES` stream, and JetStream's whole value proposition for
+that use case is replay — a consumer that starts up late (or restarts) can catch
+up on everything it missed, because the broker held onto it. If the stream's
+storage isn't actually durable across a container restart, you don't have that
+property yet — you'd have core NATS's fire-and-forget behavior wearing a
+JetStream costume, and wouldn't find out until Project 2 tried to rely on it and
+got nothing.
+
+Given that, I'd fold this into the Phase 6 plan rather than treat it as an
+afterthought — here's the revised step list:
+
+**Step 1 — `docker-compose.yml`** Postgres and NATS (JetStream, with an explicit
+`store_dir`), each with a named volume, plus the log volume.
+
+**Step 2 — `Makefile`** `up`, `down`, `logs`, `run` targets.
+
+**Step 3 — Smoke-test service skeleton** Wires `config`, `logging`, `postgres`,
+`nats` together.
+
+**Step 4 — Wire in HTTP + shutdown + NATS publish** Full six-package smoke test.
+
+**Step 5 — Durability verification (new)** Publish a message and write a row,
+`docker compose down` (not just stop the process — the container itself), bring
+the stack back up, and confirm both the Postgres row and the JetStream message
+are still there via a fresh consumer read. This is the step that actually proves
+the volumes work, not just that they're declared.
+
+**Step 6 — Full end-to-end verification** Curl, graceful shutdown via Ctrl+C,
+the rest of what we discussed.
+
+One thing worth deciding now rather than mid-step: do you want `EnsureStream` to
+keep leaving `Storage` unset (defaulting to file) with the explicit expectation
+that compose always supplies a volume, or would you rather make
+`StreamConfig.Storage: jetstream.FileStorage` explicit in the code itself so
+it's not an implicit default someone could accidentally lose track of later? I
+lean toward making it explicit — it costs one line and turns "durable by default
+configuration" into "durable by visible declaration," which fits the project's
+general discipline of not leaving important behavior to an unstated default (the
+same spirit as `pool.go`'s comment about only overriding `pgxpool`'s defaults
+when a value is actually supplied).
+
+Let me know if this revised step plan works, and your call on the `Storage`
+field question, and we'll start on Step 1.
+
+### Step 1
+
+Agreed — let's fold that into Step 1 since the volume mount and the explicit
+`Storage` field are two halves of the same guarantee.
+
+**First, the `EnsureStream` update:**
+
+```go
+// foundation/nats/stream.go
+```
+
+That's the only change — `Storage: jetstream.FileStorage` where nothing was set
+before. `jetstream.StreamConfig` also has a `MemoryStorage` option, which is
+legitimate for some use cases (a scratch stream you're fine losing), but for
+`STORES` — the stream Project 2's `depot`/`baskets` will depend on for catch-up
+replay — file storage backed by a real volume is the only choice that matches
+the durability guarantee JetStream is supposed to be giving you.
+
+**Now `docker-compose.yml`:**
+
+```yaml
+# docker-compose.yml
+```
+
+Your instincts on all of these are good, and yes — your read on the env vars is
+exactly right. `POSTGRES_USER`/`POSTGRES_PASSWORD` set the identity and password
+of the initial superuser role created at cluster init time, and `POSTGRES_DB`
+names the default database created alongside it (if omitted, it defaults to the
+same value as `POSTGRES_USER`, not literally `postgres`, but close enough to the
+same problem). All three only take effect on a _fresh_ volume — if `pg-data`
+already has data in it from a previous run, changing these in `.postgres.env`
+later won't retroactively change the role's password, since `initdb` only runs
+once. Worth remembering the first time you go to "fix" a credential and nothing
+happens — you'd need to drop the volume and reinit, not just edit the env file.
+And yes, `.postgres.env` (git-ignored) instead of inline `environment:` in the
+committed compose file is the right call — that's the actual point of `env_file`
+existing as a separate mechanism rather than just sugar.
+
+Two small things to flag on what you've got so far, then I'll get into the
+SCRAM/`pg_hba` question.
+
+`networks.eda-net.external: true` means compose expects that network to already
+exist and will error out
+(`network eda-net declared as external, but could not be found`) if it doesn't.
+You mentioned you already created it manually — that's fine for you personally,
+but it means the Makefile's `up` target (Step 2) needs a
+`docker network create eda-net || true` (or an idempotent equivalent) ahead of
+`docker compose up`, or the compose file becomes unrunnable for anyone who
+hasn't run that command by hand first. I'll fold that into Step 2 rather than
+now, just flagging it so it doesn't get lost.
+
+On `.gitignore`: `.postgres.env` needs to actually be listed there before
+anything gets committed, otherwise the exact leak you're trying to avoid happens
+on the first `git add .`. Worth adding a `.postgres.env.example` (committed,
+with placeholder values) alongside it, so the repo documents what variables are
+expected without exposing real ones — the convention most projects use for
+exactly this reason.
+
+**Now, SCRAM and `pg_hba` — you're pointing at something real, but it's worth
+being precise about what's already true by default versus what still needs an
+explicit decision.**
+
+Password _encryption_ (how the password is hashed and stored server-side, and
+how the challenge-response handshake works) has defaulted to `scram-sha-256`
+since Postgres 10, and it's been the _default_ default (not just available)
+since Postgres 14 — so on `postgres:17`, `password_encryption = scram-sha256` is
+already what you get with zero configuration. You don't need to force this
+explicitly; it would be redundant, not wrong.
+
+`pg_hba.conf` is the separate, more interesting piece — it's not about how the
+password is hashed, it's about _which authentication method is required at all,
+for connections arriving from where_. The official Postgres image's entrypoint
+script auto-generates a `pg_hba.conf` on first init, and its default behavior is
+worth knowing precisely rather than assuming: it authorizes connections over the
+network (`host` lines) using `scram-sha-256`, but authorizes connections over
+the local Unix socket (`local` lines) using `trust` — no password required at
+all — _unless_ you explicitly set the `POSTGRES_HOST_AUTH_METHOD` environment
+variable to override that. Given that our Postgres only lives inside a container
+reachable by `depot`/`baskets`/etc. over TCP, not by arbitrary local shell users
+on a socket, that default `trust`-for-local behavior is arguably harmless in
+this specific setup — but "arguably harmless" is exactly the kind of default
+this project's discipline (per `pool.go`'s comment about not leaving pool tuning
+to an unstated default) says we shouldn't leave implicit if we can make it
+explicit cheaply. Setting `POSTGRES_HOST_AUTH_METHOD=scram-sha-256` in
+`.postgres.env` closes that gap for one line of cost.
+
+So, concretely, here's what I'd add to `.postgres.env`:
+
+```
+# .postgres.env
+POSTGRES_USER=edasuper
+POSTGRES_PASSWORD=supersecure
+POSTGRES_DB=edadb
+POSTGRES_HOST_AUTH_METHOD=scram-sha-256
+```
+
+Nothing changes in `docker-compose.yml` itself for this — it's purely an env var
+the entrypoint script reads at first init to decide how to write `pg_hba.conf`.
+If `pg-data` already exists from an earlier run before this variable was added,
+it won't retroactively rewrite `pg_hba.conf` either, for the same reason
+mentioned above — worth a clean-volume test run if you've already brought
+Postgres up once.
+
+One question before we lock this in: since this variable only takes effect on
+first init, do you want to test this now with a fresh `pg-data` volume (i.e.,
+confirm you haven't run `docker compose up` yet, or are willing to
+`docker compose down -v` first), or would you rather note it and verify it
+specifically as part of Step 5's durability test, where you're already tearing
+the stack down and back up anyway?
+
+Here's Step 1 finalized with everything settled so far: your additions,
+`eda-net` created by the Makefile (Step 2) rather than externally, and
+`POSTGRES_HOST_AUTH_METHOD` added to close the `local`-socket `trust` gap
+without the fuller hardening pattern.
+
+```yaml
+# docker-compose.yml
+
+services:
+    postgres:
+        image: postgres:17
+        container_name: eda-postgres
+        restart: unless-stopped
+        env_file:
+            - ./.postgres.env
+        ports:
+            - 127.0.0.1:5433:5432
+        volumes:
+            - pg-data:/var/lib/postgresql/data
+        networks:
+            - eda-net
+
+    nats:
+        image: nats:2.12
+        container_name: eda-nats
+        restart: unless-stopped
+        command: '--jetstream --http_port 8222 --store_dir /data'
+        ports:
+            - 127.0.0.1:4223:4222
+            - 127.0.0.1:8222:8222
+        volumes:
+            - nats-data:/data
+        networks:
+            - eda-net
+
+volumes:
+    pg-data:
+    nats-data:
+
+networks:
+    eda-net:
+```
+
+```
+# .postgres.env
+POSTGRES_USER=edasuper
+POSTGRES_PASSWORD=supersecure
+POSTGRES_DB=edadb
+POSTGRES_HOST_AUTH_METHOD=scram-sha-256
+```
+
+Two things to actually do on your end before running this, not just files to
+save. First, add `.postgres.env` to `.gitignore` (and commit a
+`.postgres.env.example` with placeholder values alongside it) — the file above
+has a real password in it, and this is the last point before it could get swept
+into a `git add .`. Second, since `eda-net` no longer has `external: true`,
+compose will happily create it itself on `docker compose up` — you don't need to
+`docker network create` by hand anymore, and I'll drop that from the Makefile
+plan in Step 2 accordingly.
+
+You mentioned removing the old volumes manually — once that's done and the
+network's `external: true` is gone, bring it up with `docker compose up -d`,
+then:
+
+- `docker compose ps` — confirm both `eda-postgres` and `eda-nats` show `Up`
+- `docker volume ls` — confirm `pg-data` and `nats-data` exist (they'll be
+  prefixed with the project/folder name, e.g. `eda-storefront_pg-data`)
+- `docker network ls` — confirm `eda-net` exists, created fresh this time
+- `docker compose logs nats` — should report JetStream enabled and show `/data`
+  as the store directory
+- `docker compose logs postgres` — should show normal init output ending in
+  `database system is ready to accept connections`, with no `FATAL` lines
+
+Let me know what you get, and any questions on the `eda-net` change or the env
+file before we move to Step 2 (the `Makefile`).
+
+#### bypass of `trust` rules
+
+This confirms the `host` line is working — but the `pg_hba.conf` output reveals
+something more interesting than expected, worth working through together rather
+than skipping past.
+
+Look at what actually happened: you connected to `127.0.0.1:5433`, which Docker
+forwards into the container as a connection to Postgres's port 5432. If
+`pg_hba.conf` matches top-to-bottom and stops at the first match, you'd expect
+this connection to hit `host all all 127.0.0.1/32 trust` — the second entry in
+the auto-generated block — and connect without a password prompt at all. But it
+_did_ prompt for a password. Why do you think that line didn't match, given you
+genuinely connected from `127.0.0.1`?
+
+The answer is a Docker networking detail worth internalizing now, since it'll
+matter again the moment `depot`/`baskets` try to reach this same Postgres
+container in Project 2: `127.0.0.1` inside the _container's_ network namespace
+is not the same `127.0.0.1` you typed on your host. Docker's port-forwarding
+(`127.0.0.1:5433->5432`) doesn't preserve the source address as literal loopback
+once the packet crosses into the container — from Postgres's point of view, the
+connection arrives from whatever address the Docker network's proxy/gateway
+assigns it (something in the `eda-storefront_eda-net` bridge subnet, not
+`127.0.0.1`). So the `127.0.0.1/32` and `::1/128` trust lines are effectively
+dead code in this setup — they'd only ever match a process running _inside_ the
+container itself connecting to its own loopback, which nothing here does. Your
+connection instead fell through to the catch-all
+`host all all all scram-sha-256` line at the bottom, which is why you got
+prompted — correctly, but for a reason different from what the file's structure
+might suggest at a glance.
+
+This is actually a second real finding for the end-of-project hardening review,
+not just a curiosity: those two `trust` lines aren't doing anything useful for
+us, but they're also not obviously harmless dead weight either — worth deciding
+explicitly (remove them via the custom HBA approach, or leave them since they're
+inert in this topology) rather than carrying forward unexamined. I'd rather log
+this precisely now, while we've just worked out why, than try to reconstruct the
+reasoning later.
+
+So, current state: SCRAM is genuinely enforced for every real connection path
+this system will use, and the one gap (local Unix-socket trust) is inert as long
+as nothing runs inside the container itself. That's a reasonable place to stop
+for Phase 6 and move on — Step 1 is functionally done.
+
+Quick checklist before we close out Step 1: are you good with where Postgres's
+HBA landed for now, and ready to also spin up the NATS-side durability check
+(publishing a test message and confirming `nats-data` survives a
+`docker compose down`/`up`), or would you rather fold that into Step 5 as
+originally planned and move straight to Step 2 (the `Makefile`)?
+
+### Step 2: Makefile
+
+Good — Step 1 is closed. Here's Step 2: the `Makefile`.
+
+Per the roadmap, this is meant to be a living deliverable that grows by one set
+of targets per project, so I'll keep this first version focused on what Phase 6
+actually needs: bringing the stack up and down, tailing logs, and running the
+smoke-test service we'll build in Steps 3–4.
+
+```makefile
+# Makefile
+
+COMPOSE := docker compose
+
+.PHONY: up down logs ps smoke
+
+up:
+	$(COMPOSE) up -d
+
+down:
+	$(COMPOSE) down
+
+logs:
+	$(COMPOSE) logs -f
+
+ps:
+	$(COMPOSE) ps
+
+smoke:
+	go run ./foundation-smoketest
+```
+
+A few things worth flagging before you run anything.
+
+`down` here intentionally does _not_ pass `-v` — that's the flag that would also
+delete the named volumes (`pg-data`, `nats-data`). Given the entire point of
+Steps 5–6 is proving those volumes survive a container teardown, a `down` target
+that quietly wipes them on every run would sabotage the exact thing we're trying
+to verify. When we actually get to Step 5's durability test, we'll run
+`docker compose down` (no `-v`) deliberately, then `up` again, and check the
+data's still there — `make down` as defined gives you that by default. If you
+ever _want_ a clean slate (e.g., testing the SCRAM/`pg_hba` behavior from
+scratch again like we just did), that stays a manual `docker compose down -v`,
+not something the Makefile should make a single `make` command away from by
+accident.
+
+`smoke` assumes the throwaway service will live at `./foundation-smoketest`
+relative to the workspace root, as a `go run`-able package — matching the
+`tmp-smoketest` convention from Phases 1–5, just promoted from "temporary,
+deleted after" to "the thing Phase 6 actually builds and keeps around to prove
+the kit works end-to-end." If you'd rather name or place it differently, this is
+the moment to say so, since Step 3 will scaffold whatever path we agree on here.
+
+I left out an explicit `network create` target, since dropping `external: true`
+last step means `docker compose up` creates `eda-net` itself now — no separate
+step needed.
+
+One open question before we lock this in: do you want a `migrate` target as a
+placeholder now (even as a no-op or a comment marking where `golang-migrate`
+will plug in later, per ADL 0003), or hold off since nothing in `foundation`
+itself owns a schema yet — that's arguably `stores`' concern starting in Project
+1, not `foundation`'s? I'd lean toward holding off, since adding a target with
+nothing behind it yet is the kind of unstated-placeholder pattern the project's
+discipline has been pretty careful to avoid elsewhere (e.g. `pool.go`'s comment
+about not assigning from zero values). Let me know your take, and give `make up`
+/ `make down` / `make ps` / `make logs` a try against the stack you already have
+running to confirm the Makefile itself works before we move to Step 3.
