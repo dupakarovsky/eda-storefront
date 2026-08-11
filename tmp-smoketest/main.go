@@ -1,59 +1,46 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"net/http"
 	"os"
-	"time"
 
-	foundationhttp "github.com/dupakarovsky/eda-storefront/foundation/http"
-	"github.com/dupakarovsky/eda-storefront/foundation/logging"
+	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
 )
 
 func main() {
 
-	// instantiate a new logger
-	logger, file, err := logging.New("smoketest.log", "debug", "info")
+	// create the connection and jetstream context
+	nc, js, err := foundationnats.Connect(foundationnats.Config{
+		URL:  "nats://localhost:6969",
+		Name: "tmp-smoketest",
+	})
+	if err != nil {
+		fmt.Print(err)
+		os.Exit(1)
+	}
+	defer nc.Close()
+
+	fmt.Println("connected: ", nc.ConnectedUrl())
+	fmt.Println("status:", nc.Status())
+	fmt.Println("jetstream context ready", js != nil)
+
+	ctx := context.Background()
+
+	// create the stream
+	stream, err := foundationnats.EnsureStream(ctx, js, "TEST_STREAM", []string{"test.>"})
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
-	defer file.Close()
 
-	// instantiate a new Router
-	router := foundationhttp.NewRouter()
+	// get stream info
+	info, err := stream.Info(ctx)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 
-	// Apply middlewares
-	router.Use(
-		foundationhttp.LoggingMiddleware(logger),
-		foundationhttp.RecoveryMiddleware(logger),
-		foundationhttp.TimeoutMiddleware(2*time.Second),
-	)
-
-	// Adds the route handlers
-	router.Handle("/ok", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "ok")
-	})
-
-	router.Handle("/panic", func(w http.ResponseWriter, r *http.Request) {
-		panic("boom")
-	})
-
-	router.Handle("/slow", func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case <-time.After(5 * time.Second):
-			fmt.Fprintf(w, "finished")
-		// opt-in check for context timeout. needs to be declared so we listen
-		// for the context cancellation
-		case <-r.Context().Done():
-			http.Error(w, "request timed out", http.StatusGatewayTimeout)
-		}
-	})
-
-	/// build the handler with all middleware applied
-	handler := router.Build()
-
-	logger.Info("starting smoke test server", "addr", ":8080")
-	http.ListenAndServe(":8080", handler)
-
+	fmt.Println("stream:", info.Config.Name, "subjects:", info.Config.Subjects)
+	fmt.Println("sample subject:", foundationnats.Subjects("stores", "store", "created"))
 }

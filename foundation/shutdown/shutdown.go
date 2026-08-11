@@ -12,6 +12,7 @@ import (
 	"time"
 )
 
+// Run will execute the graceful shutdown to each service server.
 func Run(logger *slog.Logger, srv *http.Server, shutdownTimeout time.Duration) error {
 
 	sig := make(chan os.Signal, 1)

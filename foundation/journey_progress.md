@@ -224,3 +224,53 @@ Phase 4 ports `Router`/`Middleware` and the `Logging`/`Recovery`/`Timeout`
 middleware into `foundation/http`, as-is — no open design questions carried
 forward from this phase, since `Router` doesn't depend on anything `shutdown`
 does.
+
+## Phase 4 Summary — COMPLETE
+
+**Status:** Complete
+
+### What Was Built
+
+Added `foundation/http` (package `foundationhttp`), porting `court-reservation`'s
+`Router`/`Middleware` (outermost-first ordering via `slices.Backward` in both
+`Handle` and `Build`), `LoggingMiddleware` (with `responseWriterWrapper`
+intercepting `WriteHeader` to observe the response status through
+`http.ResponseWriter`'s otherwise write-only interface), `RecoveryMiddleware`
+(panic recovery, structured error log, 500 response with `Connection: close`
+set before `http.Error`), and `TimeoutMiddleware` (context deadline
+attachment; enforcement is opt-in per-handler via `ctx.Done()`). All four
+ported as-is at the code level — only the package name changed, from
+`interfaceshttp` to `foundationhttp`, specifically to avoid shadowing stdlib
+`net/http` once services need both imported side by side.
+
+Verified end-to-end via `tmp-smoketest`, exercising all three middleware at
+once: `GET /ok` (200), `GET /panic` (caught by `RecoveryMiddleware`, logged,
+500), `GET /slow` (2s timeout context canceled by `TimeoutMiddleware`, the
+handler's own `select` on `ctx.Done()` converting that into a 504). The
+smoke test's terminal log confirmed the middleware ordering itself —
+`LoggingMiddleware`'s "response sent" line reported the true final status
+and duration in both the panic and timeout cases, proving `Logging` wraps
+`Recovery` and `Timeout` rather than the reverse.
+
+### Issues Found & Resolved
+
+One build error, not a code bug: `go build ./...` from the workspace root
+failed with "directory prefix . does not contain modules listed in go.work
+or their selected dependencies." Cause: with only one `use ./foundation`
+entry, the workspace root itself isn't a recognized module, so `./...`
+can't expand from `.`. Resolved by building with an explicitly-scoped
+pattern (`go build ./foundation/...`) instead — expected to resolve itself
+naturally once more services are added as workspace members.
+
+### State at End of Phase 4
+
+`foundation/logging`, `foundation/postgres`, `foundation/config`,
+`foundation/shutdown`, and `foundation/http` are all complete. Only
+`foundation/nats` remains, awaiting Phase 5.
+
+### Carried Into Phase 5
+
+Phase 5 is net-new (no direct port source from `court-reservation`, which
+never used NATS): JetStream connection setup, stream/subject conventions,
+and a publish helper. No open design questions carried forward from Phase
+4 — `foundationhttp` has no dependency on messaging.
