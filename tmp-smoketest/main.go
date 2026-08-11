@@ -27,20 +27,26 @@ func main() {
 
 	ctx := context.Background()
 
-	// create the stream
-	stream, err := foundationnats.EnsureStream(ctx, js, "TEST_STREAM", []string{"test.>"})
+	// defines the STORES stream with the subject "stores.>"
+	stream, err := foundationnats.EnsureStream(ctx, js, "STORES", []string{"stores.>"})
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	fmt.Println("stream ready:", stream)
+
+	// instantiate a new publisher
+	pub := foundationnats.NewPublisher(js)
+
+	// define a new subject
+	subject := foundationnats.Subject("stores", "store", "created")
+
+	// publish to the stream and receive an acknowledgment
+	ack, err := pub.Publish(ctx, subject, []byte(`{"store_id":"abc123"`))
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
 
-	// get stream info
-	info, err := stream.Info(ctx)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(1)
-	}
-
-	fmt.Println("stream:", info.Config.Name, "subjects:", info.Config.Subjects)
-	fmt.Println("sample subject:", foundationnats.Subjects("stores", "store", "created"))
+	fmt.Println("published to: ", ack.Stream, "seq: ", ack.Sequence)
 }

@@ -7,12 +7,14 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Publisher type will hold a jetstream context
+// Publisher type will hold a jetstream context and will be able
+// to publish messages to the stream
 type Publisher struct {
 	js jetstream.JetStream
 }
 
-// NewPublisher instantiates a new Publisher type
+// NewPublisher instantiates a new Publisher type, that is able
+// to publish messages to the stream.
 func NewPublisher(js jetstream.JetStream) *Publisher {
 	return &Publisher{
 		js: js,
