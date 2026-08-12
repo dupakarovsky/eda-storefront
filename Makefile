@@ -16,5 +16,9 @@ ps:
 	$(COMPOSE) ps
 
 smoke:
-	go run ./foundation-smoketest
+	@echo 'Building application...'
+	@mkdir -p ./bin
+	GOOS=linux GOARCH=amd64 go build -o=./bin/foundation-smoketest ./foundation-smoketest
+	chmod +x ./bin/foundation-smoketest
+	./bin/foundation-smoketest
 

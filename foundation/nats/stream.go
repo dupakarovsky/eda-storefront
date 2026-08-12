@@ -7,6 +7,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
+// EnsureStream returns a Stream interface that allows operations within the stream,
 func EnsureStream(ctx context.Context, js jetstream.JetStream, name string, subjects []string) (jetstream.Stream, error) {
 
 	// CreateOrUpdateStream creates a stream with the given config.

@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// responseWriterWrapper intercepts WriteHeader to capture the status code,
-// since http.ResponseWriter is otherwise write-only.
+// responseWriterWrapper intercepts WriteHeader to capture the status code
 type responseWriterWrapper struct {
 	http.ResponseWriter
 	statusCode int
@@ -19,6 +18,8 @@ func newResponseWriterWrapper(w http.ResponseWriter) *responseWriterWrapper {
 	return &responseWriterWrapper{ResponseWriter: w, statusCode: http.StatusOK}
 }
 
+// WriteHeader first captures the statusCode in an internal field then passes it
+// to internal response writer
 func (rw *responseWriterWrapper) WriteHeader(code int) {
 	rw.statusCode = code
 	rw.ResponseWriter.WriteHeader(code)

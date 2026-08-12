@@ -16,7 +16,7 @@ import (
 func Connect(cfg Config) (*nats.Conn, jetstream.JetStream, error) {
 
 	opts := []nats.Option{
-		// stream name
+		// Client name
 		nats.Name(cfg.Name),
 	}
 

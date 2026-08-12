@@ -2,5 +2,5 @@ go 1.25.0
 
 use (
 	./foundation
-	./tmp-smoketest
+	./foundation-smoketest/
 )

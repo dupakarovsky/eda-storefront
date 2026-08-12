@@ -1432,19 +1432,19 @@ COMPOSE := docker compose
 .PHONY: up down logs ps smoke
 
 up:
-	$(COMPOSE) up -d
+    $(COMPOSE) up -d
 
 down:
-	$(COMPOSE) down
+    $(COMPOSE) down
 
 logs:
-	$(COMPOSE) logs -f
+    $(COMPOSE) logs -f
 
 ps:
-	$(COMPOSE) ps
+    $(COMPOSE) ps
 
 smoke:
-	go run ./foundation-smoketest
+    go run ./foundation-smoketest
 ```
 
 A few things worth flagging before you run anything.
@@ -1482,3 +1482,156 @@ discipline has been pretty careful to avoid elsewhere (e.g. `pool.go`'s comment
 about not assigning from zero values). Let me know your take, and give `make up`
 / `make down` / `make ps` / `make logs` a try against the stack you already have
 running to confirm the Makefile itself works before we move to Step 3.
+
+### Step 3: Smoketest
+
+Before wiring these together, there's a gap worth surfacing rather than working
+around silently: `foundation/config` has `ServerConfig`, `LoggerConfig`, and
+`DBConfig`, but no `NATSConfig` — Phase 5's `tmp-smoketest` never went through
+the config package at all, it just built a `foundationnats.Config` by hand.
+Since this smoke test is the first place a service is meant to construct _every_
+`foundation` package together the way a real service (`stores`, in Project 1)
+eventually will, it should go through `config.Load()` for NATS too, not hardcode
+connection details in `main.go`. That means one small addition to
+`foundation/config` before the smoke test itself.
+
+```go
+// foundation/config/config.go
+type Config struct {
+	Server ServerConfig
+	Logger LoggerConfig
+	DB     DBConfig
+	NATS   NATSConfig
+}
+```
+
+```go
+// foundation/config/config.go — new struct
+type NATSConfig struct {
+	URL            string        `envconfig:"NATS_URL" default:"nats://127.0.0.1:4223"`
+	Name           string        `envconfig:"NATS_NAME" default:"foundation-smoketest"`
+	ConnectTimeout time.Duration `envconfig:"NATS_CONNECT_TIMEOUT" default:"5s"`
+	MaxReconnects  int           `envconfig:"NATS_MAX_RECONNECTS" default:"5"`
+	ReconnectWait  time.Duration `envconfig:"NATS_RECONNECT_WAIT" default:"2s"`
+}
+```
+
+Two defaults worth explaining rather than skimming past. The `NATS_URL` default
+is `4223`, not NATS's usual `4222` — that's your compose file's host-side port
+mapping (`127.0.0.1:4223:4222`) from Step 1, since this smoke-test process runs
+on your host, not inside `eda-net`. Same reasoning applies to `DB_PORT`, which
+already defaults to `5432` in `DBConfig` but needs to be `5433` for this same
+reason — that one you'll override via env rather than change the shared default,
+since `5432` is still correct for a service that _does_ eventually run inside
+the Docker network.
+
+Now the smoke test itself — everything folded into one `main.go`, exercising all
+six `foundation` packages:
+
+```go
+// foundation-smoketest/main.go
+```
+
+What this handler actually demonstrates, end to end: a real HTTP request comes
+in through `Router` wrapped in all three middleware (so a panic here would still
+get caught and logged with accurate status/duration, same as
+`court-reservation`), pings Postgres to confirm the pool is genuinely live
+rather than just constructed, publishes a real message onto the `SMOKETEST`
+JetStream stream and gets back a durable ack (`ack.Stream`, `ack.Sequence` — the
+same fields Phase 5's smoke test verified), and returns that ack as proof to the
+caller. `shutdown.Run` wraps the whole `*http.Server`, so `Ctrl+C` still
+exercises the graceful-shutdown path Phase 3 built.
+
+You'll need a `foundation-smoketest/.env` (git-ignored, same convention as
+`.postgres.env`) with the host-specific overrides:
+
+```
+DB_HOST=127.0.0.1
+DB_PORT=5433
+DB_USER=edasuper
+DB_PASSWORD=supersecure
+DB_DATABASE=edadb
+DB_SSL_MODE=disable
+NATS_URL=nats://127.0.0.1:4223
+```
+
+`DB_SSL_MODE=disable` is deliberate and worth flagging, not an oversight — the
+container's exposed port is bound to `127.0.0.1` only, so this traffic never
+leaves your machine, and `postgres:17` with the default config doesn't have TLS
+certs configured to negotiate `sslmode=require` against anyway. That's fine for
+local dev; it becomes a real question once a service is talking to Postgres
+across an actual network boundary, which is out of scope here.
+
+Let me know what happens — including if `go mod tidy` or the build itself
+surfaces anything, since that's as much a real part of this step as the curl
+result.
+
+#### Exit Error on go run
+
+Everything about the actual service behaved exactly right — `/ping` gave real
+Postgres + NATS acks, `/panic` was caught and logged with a clean 500, `/slow`
+correctly timed out at the `SRV_REQUEST_TIMEOUT` boundary rather than waiting
+the full 5s, and the shutdown sequence completed in the correct LIFO order
+(`nc.Close()` before `pool.Close()`, matching the order you registered the
+`defer`s in). That's Phase 3's harness and Phase 4's middleware both proven for
+real, together, for the first time.
+
+But don't let that `make: *** [Makefile:19: smoke] Error 1` slide past as noise
+— it's a real finding, and it's worth working out _why_ it happened rather than
+me just telling you, since it's the kind of thing that'll bite again the moment
+you containerize a real service.
+
+Look closely at the log timestamps around the Ctrl+C: `shutdown complete` at
+`10:48:59.183465076`, `nats connection has closed` at `.183565108`,
+`database pool has closed` at `.183771145` — all within half a millisecond of
+each other, no errors logged anywhere, and `main.go`'s own
+`if err := shutdown.Run(...); err != nil` branch (which would have logged
+`"server exited with error"` and called `os.Exit(1)`) never fired. So the
+_program_ exited cleanly, exit code 0, as far as Go's own code is concerned.
+What do you think could produce a non-zero exit at the `make`/shell level even
+though the Go program itself exited successfully?
+
+Here's the mechanism: `make smoke` runs `go run ./foundation-smoketest`, and
+`go run` is itself a wrapper process — it compiles your code to a temp binary,
+execs it as a _child_ process, and normally relays that child's exit code back
+up. But `go run` doesn't install its own signal handler for SIGINT. When you hit
+Ctrl+C in the terminal, SIGINT goes to the entire foreground process group at
+once — both `go run` and your compiled binary receive it simultaneously, not in
+sequence. Your binary handles it properly, via `shutdown.Run`'s `signal.Notify`
+channel, and shuts down gracefully. But `go run` itself has no handler, so the
+_default_ OS action for an unhandled SIGINT applies to it directly: immediate
+termination. Since `go run` dies on the signal itself rather than waiting to
+relay whatever exit code its child eventually produces, the shell sees `go run`
+terminated abnormally (by signal), and reports that as a failure — regardless of
+how cleanly the actual binary underneath it shut down. It's a known `go run`
+quirk, not a bug in anything we built.
+
+This matters beyond just a cosmetic `make` error: it means `go run` is
+fundamentally the wrong invocation for anything that needs to prove real
+signal-handling behavior end-to-end — the signal race means what you observe
+isn't purely your program's behavior. It happens to have worked out fine here
+because your shutdown was fast, but the "Error 1" is a sign the test harness
+itself is slightly off. This also foreshadows real container behavior correctly,
+in a good way — when `stores` runs in a container in Project 1, Docker sends
+SIGTERM directly to the compiled binary (PID 1 or via an init), with no
+`go run`-equivalent wrapper in between. So the fix here also happens to make
+local testing match that future reality more closely.
+
+The fix: build the binary first, then run the binary directly, instead of
+`go run`.
+
+```makefile
+# Makefile
+smoke:
+	go build -o bin/foundation-smoketest ./foundation-smoketest
+	./bin/foundation-smoketest
+```
+
+With this, Ctrl+C's SIGINT goes straight to `./bin/foundation-smoketest` — no
+intermediate wrapper process to die on the signal — and the exit code `make`
+sees will be exactly what your `main.go` actually returns.
+
+Want to make that Makefile change and re-run the same Ctrl+C test to confirm
+`make smoke` exits clean this time? Once that's confirmed, we're done with the
+combined wiring step and ready for Step 5 — the durability test we deferred,
+which is the last real piece of Phase 6 before we close out the project.

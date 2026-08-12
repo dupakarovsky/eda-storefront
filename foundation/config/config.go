@@ -15,6 +15,7 @@ type Config struct {
 	Server ServerConfig
 	Logger LoggerConfig
 	DB     DBConfig
+	NATS   NATSConfig
 }
 
 // ServerConfig defines the configuration parameters for the server
@@ -49,6 +50,16 @@ type DBConfig struct {
 	MinConns        int           `envconfig:"DB_MIN_CONNS" default:"5"`
 	MaxConnLifetime time.Duration `envconfig:"DB_MAX_CONNS_LIFETIME" default:"1h"`
 	MaxConnIdleTime time.Duration `envconfig:"DB_MAX_CONNS_IDLE_TIME" default:"30m"`
+}
+
+// NATSConfig defines configuration parameters for the NATS server
+// URL should be the same as the docker-compose file
+type NATSConfig struct {
+	URL            string        `envconfig:"NATS_URL" default:"nats://127.0.0.1:4223"`
+	Name           string        `envconfig:"NATS_NAME" default:"foundation-smoketest"`
+	ConnectTimeout time.Duration `envconfig:"NATS_CONNECT_TIMEOUT" default:"5s"`
+	MaxReconnects  int           `envconfig:"NATS_MAX_RECONNECTS" default:"5"`
+	ReconnectWait  time.Duration `envconfig:"NATS_RECONNECT_WAIT" default:"2s"`
 }
 
 // Load reads the .env file and injects the key/value pairs using os.Setenv
