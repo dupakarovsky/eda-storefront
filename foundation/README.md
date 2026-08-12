@@ -1483,7 +1483,7 @@ about not assigning from zero values). Let me know your take, and give `make up`
 / `make down` / `make ps` / `make logs` a try against the stack you already have
 running to confirm the Makefile itself works before we move to Step 3.
 
-### Step 3: Smoketest
+### Steps 3-4: Smoketest
 
 Before wiring these together, there's a gap worth surfacing rather than working
 around silently: `foundation/config` has `ServerConfig`, `LoggerConfig`, and
@@ -1497,23 +1497,10 @@ connection details in `main.go`. That means one small addition to
 
 ```go
 // foundation/config/config.go
-type Config struct {
-	Server ServerConfig
-	Logger LoggerConfig
-	DB     DBConfig
-	NATS   NATSConfig
-}
 ```
 
 ```go
 // foundation/config/config.go — new struct
-type NATSConfig struct {
-	URL            string        `envconfig:"NATS_URL" default:"nats://127.0.0.1:4223"`
-	Name           string        `envconfig:"NATS_NAME" default:"foundation-smoketest"`
-	ConnectTimeout time.Duration `envconfig:"NATS_CONNECT_TIMEOUT" default:"5s"`
-	MaxReconnects  int           `envconfig:"NATS_MAX_RECONNECTS" default:"5"`
-	ReconnectWait  time.Duration `envconfig:"NATS_RECONNECT_WAIT" default:"2s"`
-}
 ```
 
 Two defaults worth explaining rather than skimming past. The `NATS_URL` default
@@ -1635,3 +1622,99 @@ Want to make that Makefile change and re-run the same Ctrl+C test to confirm
 `make smoke` exits clean this time? Once that's confirmed, we're done with the
 combined wiring step and ready for Step 5 — the durability test we deferred,
 which is the last real piece of Phase 6 before we close out the project.
+
+### Step 5: Durability Verified
+
+Clean exit this time — no `make: *** Error 1`, confirming the earlier failure
+really was `go run`'s signal-relay quirk and not a shutdown ordering issue with
+our own code.
+
+One small thing worth naming, not fixing: `GOOS=linux GOARCH=amd64` is redundant
+right now, since your profile has you on Ubuntu already — you're cross-compiling
+for the platform you're already on. It's not wrong, and it's actually a
+reasonable habit to have gotten into early, since it foreshadows the real reason
+that pattern exists: once `stores` gets a `Dockerfile` in Project 1, the build
+step typically _does_ need `GOOS=linux GOARCH=amd64` explicitly, because the
+image being built often differs from the host doing the building (e.g., building
+on macOS/ARM for a Linux/amd64 container). Fine to leave as-is here since it's
+harmless and correctly anticipates that need.
+
+Step 3/4 (combined) is done — the smoke test now proves all six `foundation`
+packages working together, running as a real compiled binary, with clean signal
+handling. That's the last piece before Step 5, which is the one we've been
+deferring since Step 1: proving `pg-data` and `nats-data` actually survive a
+container teardown, not just that they're declared in the compose file.
+
+Here's how I'd sequence Step 5, given what's already running:
+
+1. With the stack up and `foundation-smoketest` running, hit `/ping` once — this
+   writes a real row-touching operation (the `pool.Ping` call) and, more
+   importantly, publishes a real message onto `SMOKETEST` with a real sequence
+   number. Note the `nats_seq` you get back.
+1. Stop the smoke test (Ctrl+C — we just proved that shuts down clean).
+1. `make down` — this tears down the containers themselves, not just the
+   process. No `-v`, so volumes should survive.
+1. `docker volume ls` — confirm `pg-data` and `nats-data` are still listed (they
+   should be, since `down` without `-v` never touches them, but worth seeing it
+   rather than assuming).
+1. `make up` — bring fresh containers back up, reusing the same volumes.
+1. Check the Postgres log for the same line you saw earlier by accident —
+   `PostgreSQL Database directory appears to contain a database; Skipping initialization`
+   — this time as a deliberate check, not a side observation.
+1. Run `foundation-smoketest` again, hit `/ping` again, and check the new
+   `nats_seq` — it should continue from where you left off (e.g., if the first
+   `/ping` gave you `nats_seq: 1`, this one should give `nats_seq: 2`, _not_
+   reset to `1`). A reset back to `1` would mean the stream got recreated from
+   scratch rather than genuinely persisting, even if the container came back up
+   fine.
+1. As an independent cross-check outside our own Go code, hit NATS's monitoring
+   endpoint directly: `curl localhost:8222/jsz?streams=true` — look for the
+   `SMOKETEST` stream and confirm its message count matches what you'd expect
+   from both `/ping` calls combined.
+
+That `nats_seq` continuity check in step 7 is really the crux of the whole test
+— it's the one signal that can't be faked by a container merely restarting
+successfully; it can only happen if the actual message log survived on disk.
+
+Ready to run through that sequence?
+
+This is a clean pass — both signals line up exactly as they needed to.
+`nats_seq` continued 2 → 3 with no reset, confirming the JetStream stream itself
+survived the teardown rather than being silently recreated from scratch. And
+there's a second, independent confirmation sitting right in the `jsz` output
+that's worth pointing out since it's easy to skim past:
+`"created": "2026-08-12T13:45:58.33521617Z"` on the `SMOKETEST` stream is from
+your very first `EnsureStream` call, hours before this test — if the container
+restart had actually recreated the stream (even with the same name), that
+`created` timestamp would have reset to the moment of the second `make smoke`
+run. It didn't, which means `CreateOrUpdateStream` found the existing stream on
+disk and updated it in place, exactly the idempotent behavior Phase 5 first
+verified and Step 5 here just confirmed survives a full container teardown.
+`messages: 3`, `first_seq: 1`, `last_seq: 3` all agree with that same story.
+
+Postgres's side of this was already implicitly proven by the
+`Skipping initialization` log line plus every `/ping` call successfully pinging
+the same pool against the same `pg-data` volume across the restart — no separate
+row-level check needed, since `NewPool`'s own `Ping` call is exactly the kind of
+"is this genuinely the same database, not a fresh one" check we'd otherwise
+write by hand.
+
+Step 5 is done, and with it, Phase 6 itself is functionally complete — compose
+stack, Makefile, and a fully wired smoke test proving all six `foundation`
+packages work together and both stateful services survive a real restart. That
+closes out the entire `foundation` project.
+
+Before I write the Phase 6 summary and append it to `journey_progress.md`, one
+quick question: do you want me to fold the Postgres hardening / `pg_hba`
+discussion and the `NATSConfig` addition to `foundation/config` into the "What
+Was Built" / "Issues Found & Resolved" narrative for Phase 6, or would you
+rather I keep the Phase 6 summary tightly scoped to
+compose/Makefile/smoke-test/durability, and let the hardening question live
+entirely in the ADL we still owe from the two open items at the top of this
+conversation (the `foundation`-only project scope, and the deferred
+multi-listener shutdown question — now joined by a third: Postgres HBA
+hardening)?
+
+Once you confirm that, I'll write the Phase 6 summary, and then we move to the
+two end-of-project items you flagged at the start: the ADL review and the
+`system-state.md` update.
