@@ -1718,3 +1718,196 @@ hardening)?
 Once you confirm that, I'll write the Phase 6 summary, and then we move to the
 two end-of-project items you flagged at the start: the ADL review and the
 `system-state.md` update.
+
+### Hardening postgres
+
+Good, that's a clear, defensible position — and it lines up with how the
+project's already been treating similar tradeoffs (explicit over implicit, even
+at some upfront cost). One numbering consequence: since the multi-listener
+shutdown decision isn't getting a file, we're down to two — ADL 0005
+(foundation-only scope) and 0006 (Postgres hardening) — not three. I'll hold off
+writing either until this reopened work is actually done and re-verified, same
+discipline as before: the ADL should describe what's true, not what's planned.
+
+Before I draft the hardening files, there's one real correctness issue in the
+reference pattern you shared that needs fixing for our setup specifically, not
+just copied — worth catching now rather than after you've tested it and hit a
+confusing lockout.
+
+The reference file's `local all postgres peer` line assumes the database
+superuser role is literally named `postgres`. Ours isn't — recall the init log:
+`"The files belonging to this database system will be owned by user 'postgres'"`
+refers to the **OS user** the container process runs as, which the official
+Postgres image always keeps as `postgres` regardless of `POSTGRES_USER`. But the
+actual **database superuser role** created at init is named after
+`POSTGRES_USER` — `edasuper` in our case — and no `postgres` role exists at all
+unless we happen to create one. `peer` authentication maps the connecting OS
+user to a Postgres role of the _same name_; copying `local all postgres peer`
+verbatim would authorize an OS user named `postgres` to connect as a database
+role that doesn't exist, which does nothing useful and could even mask the fact
+that peer auth isn't actually working the way you'd expect. Our line needs to be
+`local all edasuper peer` instead.
+
+Second thing I need from you before writing `pg_hba.rules`: the Docker bridge
+subnet for `eda-net`. Since we dropped `external: true`, compose now creates it
+fresh with whatever subnet Docker's IPAM pool hands out — not the
+`172.18.0.0/16` from the other project's file, which was specific to _that_
+project's network. Can you run:
+
+```bash
+docker network inspect eda-storefront_eda-net --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+```
+
+and give me the CIDR it prints? Once I have that, I'll pin it explicitly in
+`docker-compose.yml`'s `networks:` block (via `ipam.config.subnet`) rather than
+leave it to chance on every recreation — otherwise the whole point of writing an
+explicit `host ... <subnet> scram-sha-256` rule is undermined by the subnet
+being able to silently drift on some future `docker network rm`/recreate.
+
+Once I have that subnet, here's the sequence I'd propose for reopening Phase 6:
+
+**Step A** — write `init/init.sh`, `config/hardening.conf`,
+`config/pg_hba.rules` (adapted: `edasuper` not `postgres`, real subnet, our
+actual database name), mount them into `docker-compose.yml`, matching the
+reference structure.
+
+**Step B** — since `hba_file` and `include_dir` are config-level, not
+`initdb`-level, this shouldn't require nuking `pg-data` — but we should verify
+that claim rather than assume it, given how the `POSTGRES_HOST_AUTH_METHOD` gap
+surprised us earlier. If a plain `docker compose up` after adding these mounts
+doesn't pick up the new `pg_hba.rules` (Postgres needs at minimum a config
+reload, possibly a restart, for `hba_file`/`include_dir` changes to take effect
+— a `SIGHUP` handles both cleanly without a full restart, but compose's normal
+restart on `up` should also suffice), we'll test that directly rather than
+guess.
+
+**Step C** — re-verify enforcement directly: confirm `psql` from the host still
+prompts for SCRAM over TCP (same check as before), and confirm
+`docker compose exec postgres psql -U edasuper -d edadb` from _inside_ the
+container connects via the new `peer` line without a password, and check the
+resulting `pg_hba.conf` inside the container reflects the mounted file, not the
+auto-generated one.
+
+**Step D** — re-run `foundation-smoketest`'s `/ping` once to confirm nothing
+about the hardening broke the actual application connection path (this is the
+one that matters most, practically).
+
+Send me that subnet output and I'll draft the three files.
+
+### Step A
+
+Good — `172.18.0.0/16` happens to match the reference file's value exactly,
+which is a coincidence worth being honest about, not a reason to skip pinning
+it: Docker's IPAM pool assigns subnets in order as networks are created, and
+which one lands on `eda-net` depends on how many other networks already exist on
+your machine at creation time. Today it's `172.18.0.0/16`; a future
+`docker network rm`/recreate (or just having more networks around) could easily
+hand it something else. Pinning it explicitly in the compose file makes it a
+fact of our config, not a fact of current machine state.
+
+Here's Step A, all four pieces.
+
+**`docker-compose.yml` changes** — pin the subnet, mount the three new files:
+
+```yaml
+# docker-compose.yml
+services:
+    postgres:
+        #...
+        volumes:
+            - pg-data:/var/lib/postgresql/data
+            - ./postgres/init/init.sh:/docker-entrypoint-initdb.d/init.sh
+            - ./postgres/config:/etc/postgresql/conf.d
+        networks:
+            - eda-net
+#...
+networks:
+    eda-net:
+        ipam:
+            config:
+                - subnet: 172.18.0.0/16
+```
+
+I put the mounted files under `./postgres/init/` and `./postgres/config/` rather
+than bare `./init/` and `./config/` — worth flagging since I deviated from the
+reference file's layout. Reasoning: this workspace already has (or will have)
+multiple services with their own configs eventually, and bare `config/`/`init/`
+at the workspace root reads ambiguously six months from now — `config/` for
+what? Namespacing it under `postgres/` costs nothing and stays legible as the
+project grows. Say so if you'd rather match the reference layout exactly
+instead.
+
+**`postgres/init/init.sh`** — unchanged from the reference, this part has no
+project-specific content:
+
+```bash
+#!/bin/bash
+set -e
+
+PGCONF="/var/lib/postgresql/data/postgresql.conf"
+
+if ! grep -q "^include_dir" "$PGCONF"; then
+    echo "include_dir = '/etc/postgresql/conf.d'" >>"$PGCONF"
+    echo "LOG: include_dir added to postgresql.conf"
+fi
+```
+
+**`postgres/config/hardening.conf`** — adapted only where our setup differs (no
+reason to change the logging/connection-limit lines, they're not
+environment-specific):
+
+```conf
+# postgres/config/hardening.conf
+password_encryption = scram-sha-256
+
+listen_addresses = '*'
+
+log_connections = on
+log_disconnections = on
+logging_collector = on
+log_directory = 'pg_log'
+log_filename = 'postgresql-%Y-%m-%d.log'
+log_rotation_age = 1d
+log_rotation_size = 100MB
+
+max_connections = 100
+
+hba_file = '/etc/postgresql/conf.d/pg_hba.rules'
+```
+
+**`postgres/config/pg_hba.rules`** — the two real changes from the reference:
+`edasuper` instead of `postgres` for the peer line, and our actual database name
+instead of `all` where it's reasonable to be specific:
+
+```
+# postgres/config/pg_hba.rules
+# TYPE  DATABASE  USER       ADDRESS         METHOD
+
+local   all       edasuper                   peer
+host    all       all        127.0.0.1/32    scram-sha-256
+host    all       all        ::1/128         scram-sha-256
+host    all       all        172.18.0.0/16   scram-sha-256
+
+# Explicitly deny everything else
+host    all       all        0.0.0.0/0       reject
+host    all       all        ::/0            reject
+```
+
+I kept `DATABASE` as `all` rather than narrowing it to `edadb` specifically —
+worth a quick call from you either way. Narrowing it is more correct hardening
+in spirit (least privilege — why let `edasuper` authenticate against a database
+that doesn't exist yet), but every future service in this system will get its
+own database on this same Postgres instance eventually, each needing its own row
+here or its own broader match. I'd lean toward leaving `all` for now and
+revisiting per-database scoping only if/when this instance actually hosts
+multiple services' databases side by side — right now `edadb` is the only one,
+so the distinction is theoretical. Flag if you'd rather be strict from the
+start.
+
+One more thing before you run this: `init.sh` needs to be executable on disk
+(`chmod +x ./postgres/init/init.sh`) before it's bind-mounted, or the
+entrypoint's `docker-entrypoint-initdb.d` runner will skip it silently — worth
+doing now rather than discovering it as a confusing non-event during Step B.
+
+Ready for you to create these files and give `docker compose up` a run per Step
+B, or do you want to settle the `DATABASE` scoping question first?

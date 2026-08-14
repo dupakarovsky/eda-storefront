@@ -9,12 +9,7 @@ import (
 // TimeoutMiddleware wraps next so that every request downstream — the
 // handler itself, and anything it calls (the application-layer use cases,
 // and through them, the repository's database calls) — receives a context
-// bounded by timeout. Positioned innermost in main.go's middleware stack,
-// closest to the actual handler: Logging needs to observe the request's
-// true final status and duration even if it timed out, and Recovery needs
-// to still be able to catch a panic that happens while a timeout-bounded
-// operation is unwinding — so both need to wrap this, not the other way
-// around
+// bounded by timeout.
 func TimeoutMiddleware(timeout time.Duration) Middleware {
 
 	m := func(next http.Handler) http.Handler {
