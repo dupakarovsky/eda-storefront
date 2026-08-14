@@ -4,11 +4,11 @@ The single source of truth for "what's actually running right now." Updated
 at the start and end of every project — see `docs/roadmap.md` for the
 working agreement around this.
 
-Last updated: 2026-08-09 (initial creation, nothing built yet)
+Last updated: 2026-08-14 (`foundation` project complete)
 
 | Service                         | Status      | Project Dir                 | Publishes                                                                              | Consumes                                                                                   | Last Updated |
 | ------------------------------- | ----------- | --------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------ |
-| `foundation` (shared package)   | Not started | `foundation/`               | —                                                                                      | —                                                                                          | —            |
+| `foundation` (shared package)   | Live        | `foundation/`               | —                                                                                      | —                                                                                          | 2026-08-14   |
 | `stores`                        | Not started | `01-stores/`                | `StoreCreated`, `StoreRebranded`, `ProductAdded`, `ProductRebranded`, `ProductRemoved` | —                                                                                          | —            |
 | `depot`                         | Not started | `02-depot-baskets/depot/`   | `ShoppingListCompleted` (+ others TBD)                                                 | `stores` events                                                                            | —            |
 | `baskets`                       | Not started | `02-depot-baskets/baskets/` | `BasketCheckedOut` (+ others TBD)                                                      | `stores` events                                                                            | —            |
@@ -21,12 +21,12 @@ Last updated: 2026-08-09 (initial creation, nothing built yet)
 
 ## Infrastructure
 
-| Component            | Status      | Notes                                                                     |
-| -------------------- | ----------- | ------------------------------------------------------------------------- |
-| `docker-compose.yml` | Not started | Created in Project 1; grows by one service block per project thereafter   |
-| NATS (JetStream)     | Not started | Stood up in Project 1                                                     |
-| Postgres             | Not started | One database per service, stood up incrementally as each service needs it |
-| `Makefile`           | Not started | Created in Project 1; grows by one set of targets per project thereafter  |
+| Component            | Status | Notes                                                                                                                                                                                                                                                                                          |
+| -------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docker-compose.yml` | Live   | Postgres 17 + NATS 2.12 (JetStream), each with a named volume (`pg-data`, `nats-data`), on a pinned-subnet `eda-net` bridge network, ports bound to `127.0.0.1` only. Grows by one service block per project from here.                                                                        |
+| NATS (JetStream)     | Live   | `EnsureStream` uses explicit `FileStorage`; durability across container restart confirmed (`nats_seq` continuity + matching `/jsz` stream state before/after a `down`/`up` cycle, including from a fresh volume).                                                                              |
+| Postgres             | Live   | Hardened baseline per ADL 0006 — custom `pg_hba.rules` (`peer` for local socket scoped to `edasuper`, `scram-sha-256` for TCP, explicit reject-all fallback), confirmed on both an existing and a freshly-initialized volume. One database (`edadb`) so far; one per service as each is added. |
+| `Makefile`           | Live   | `up`, `down` (deliberately non-destructive of volumes), `logs`, `ps`, `smoke`. Grows by one set of targets per project.                                                                                                                                                                        |
 
 ## How to update this file
 
