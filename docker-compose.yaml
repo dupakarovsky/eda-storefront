@@ -10,6 +10,8 @@ services:
         volumes:
             # local pg-data dir bound to the containers posgresql/data
             - pg-data:/var/lib/postgresql/data
+            - ./postgres/init/init.sh:/docker-entrypoint-initdb.d/init.sh
+            - ./postgres/config:/etc/postgresql/conf.d
         networks:
             - eda-net
 
@@ -34,3 +36,6 @@ volumes:
 
 networks:
     eda-net:
+        ipam:
+            config:
+                - subnet: 172.18.0.0/16

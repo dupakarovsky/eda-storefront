@@ -15,6 +15,10 @@ logs:
 ps:
 	$(COMPOSE) ps
 
+exec:
+	docker exec -ti eda-postgres bash
+
+
 smoke:
 	@echo 'Building application...'
 	@mkdir -p ./bin
