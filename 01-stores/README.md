@@ -91,3 +91,5 @@ Go ahead and create those two files, then run `go build ./...` from inside
 just a compile check. Let me know how that goes, and if you have questions about
 the `DomainEvent` design before we move to Step 2 (`Rebrand`,
 `EnableParticipation`, `DisableParticipation`).
+
+### Step 2: StoreParticipation Enabled, Disable and Rebrand Events

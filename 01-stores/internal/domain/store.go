@@ -5,12 +5,11 @@ import (
 	"time"
 )
 
-// StoreCreatedEvent is the event name for creating a new store
-const StoreCreatedEvent = "stores.StoreCretated"
-
 var (
-	ErrStoreNameIsBlank     = errors.New("the store name cannot be blank")
-	ErrStoreLocationIsBlank = errors.New("the store location cannot be blank")
+	ErrStoreNameIsBlank               = errors.New("the store name cannot be blank")
+	ErrStoreLocationIsBlank           = errors.New("the store location cannot be blank")
+	ErrStoreIsAlreadyParticipating    = errors.New("the store is already participating")
+	ErrStoreIsAlreadyNotParticipating = errors.New("the store is already not participating")
 )
 
 // Store defines the a new store, with the necessary fields, that will be offering
@@ -53,5 +52,59 @@ func NewStore(id, name, location string, participating bool) (*Store, Event, err
 	}
 
 	return store, event, nil
+
+}
+
+// EnableParticipation enables a Store from participating in the applicatio
+// and emits a new StoreParticipationEnabled Event
+func (s *Store) EnableParticipation() (Event, error) {
+	// errors when  Participating is already true
+	if s.Participating {
+		return nil, ErrStoreIsAlreadyNotParticipating
+	}
+
+	// updates the local property
+	s.Participating = true
+
+	// emit a new Event
+	return StoreParticipationEnabled{
+		eventBase:     eventBase{aggregateID: s.ID, occurredAt: time.Now()},
+		Participating: true,
+	}, nil
+}
+
+// DisablesParticipation removes a Store from participating in the application
+// and emits a new Store Event
+func (s *Store) DisabledParticipation() (Event, error) {
+	if !s.Participating {
+		return nil, ErrStoreIsAlreadyNotParticipating
+	}
+
+	// updates the local property
+	s.Participating = false
+
+	// emit a new Event
+	return StoreParticipationDisabled{
+		eventBase:     eventBase{aggregateID: s.ID, occurredAt: time.Now()},
+		Participating: true,
+	}, nil
+
+}
+
+// Rerand will modify a Stores name and emit a StoreReabarnd event
+func (s *Store) Rerband(name string) (Event, error) {
+	// emit error when empty
+	if name == "" {
+		return nil, ErrStoreNameIsBlank
+	}
+
+	// Update the Name property
+	s.Name = name
+
+	// emit a new Event
+	return StoreRebrand{
+		eventBase: eventBase{aggregateID: s.ID, occurredAt: time.Now()},
+		Name:      name,
+	}, nil
 
 }
