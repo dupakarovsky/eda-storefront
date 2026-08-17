@@ -1,6 +1,6 @@
 COMPOSE := docker compose
 
-.PHONY: up down logs ps smoke
+.PHONY: up down logs ps smoke 
 
 up:
 	$(COMPOSE) up -d
@@ -23,3 +23,6 @@ smoke:
 	chmod +x ./bin/foundation-smoketest
 	./bin/foundation-smoketest
 
+# -----
+format:
+	mdformat --wrap=80 ./**/README.md
