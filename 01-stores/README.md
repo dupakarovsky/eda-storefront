@@ -93,3 +93,74 @@ the `DomainEvent` design before we move to Step 2 (`Rebrand`,
 `EnableParticipation`, `DisableParticipation`).
 
 ### Step 2: StoreParticipation Enabled, Disable and Rebrand Events
+
+Agreed — that's consistent with the `StoreCreated`/`StoreRebranded` shape, and
+avoids the mixed-visibility problem entirely by trading one type with a variable
+name for two types with fixed names. Here's the full `events.go` addition and
+the corrected `store.go` methods:
+
+```go
+// internal/domain/events.go
+```
+
+`Rebrand`'s blank-name check is back in, using the same `ErrStoreNameIsBlank`
+sentinel `NewStore` already uses — one error, reused wherever "a store needs a
+non-blank name" is being enforced, rather than a second near-identical sentinel.
+
+Build it and let me know how it goes. Once that's clean, we'll move to `Product`
+— same pattern (constructor + behaviors + events), but with a couple of new
+things: it references a `StoreID` it doesn't own, and price changes
+(`IncreasePrice`/`DecreasePrice`) need to decide what happens on invalid input
+(negative resulting price) that `Store`'s methods so far haven't had to
+consider.
+
+### Step 3: Product Aggragate
+
+`Product` follows the same shape as `Store`, with a bit more happening in the
+price methods. Here's the full aggregate — constructor, `Rebrand`,
+`IncreasePrice`/`DecreasePrice`, and `Remove` — plus its events.
+
+```go
+// internal/domain/events.go — additions
+```
+
+Three deviations from the book worth flagging explicitly:
+
+1. **`Rebrand` validates blank name**, same reasoning as `Store.Rebrand` — the
+   book didn't check it there either, and we already decided that gap was worth
+   closing.
+1. **`IncreasePrice`/`DecreasePrice` reject negative prices**, which the book's
+   version doesn't do (only `InitProduct` checks `price < 0`). Since these take
+   an absolute target price, not a delta, nothing stops a negative one from
+   slipping through post-creation without this.
+1. **Price is stored and set directly** (`p.Price = price`) rather than via
+   delta arithmetic. The book computes `Delta` and later reapplies it with
+   `p.Price = p.Price + payload.Delta` inside `ApplyEvent` — a pattern that
+   exists because their `ApplyEvent` is the _only_ path that mutates state
+   (event-sourced rehydration). We don't have that separate path — the method
+   itself is the one and only place `Price` changes — so recomputing the same
+   value via addition would just be redundant arithmetic for the same result.
+   The event's `Delta` field is kept as-is, since a consumer (`depot`'s cache,
+   say) may still want "price went up by $2" rather than just the new absolute
+   price.
+
+`Remove()` always succeeds — no invariant currently blocks removing a product —
+so it returns `(Event, error)` only for signature consistency with the other
+methods, not because an error is actually reachable. If a real precondition
+shows up later (e.g. "can't remove a product with pending orders"), the
+signature's already there to support it.
+
+Build this and let me know how it goes — then we'll write `product_test.go` the
+same way we did for `Store`.
+
+#### Test Files
+
+`product_test.go`, following the same shape as `store_test.go` — a shared constructor helper, then one `t.Run` subtest per behavior and its error paths, including the equal-price case for both `IncreasePrice` and `DecreasePrice`.
+
+```go
+// internal/domain/product_test.go
+```
+
+One thing to note on the negative-price checks for `IncreasePrice`/`DecreasePrice`: since both already reject any target price on the wrong side of the current price via `<=`/`>=`, and `NewProduct` already guarantees `Price >= 0` at creation, a negative target price for `IncreasePrice` would already be caught by `price <= p.Price` in virtually every real case (you can't increase into negative territory from a non-negative starting price) — the explicit `price < 0` check is mostly a defense-in-depth/clarity thing rather than something reachable through normal use. Worth keeping for a clear error message either way, but wanted to flag that the two checks overlap in coverage rather than being fully independent guards.
+
+Run `go test ./01-stores/internal/domain/... -v` and let me know how it goes.

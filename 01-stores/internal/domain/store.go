@@ -23,7 +23,7 @@ type Store struct {
 
 // NewStore is a constructor function that will instantiate a new Store
 // from the values it's receives, as well as the StoreCreatedEvent when successful
-func NewStore(id, name, location string, participating bool) (*Store, Event, error) {
+func NewStore(id, name, location string) (*Store, Event, error) {
 
 	// evalute for empty name
 	if name == "" {
@@ -55,12 +55,12 @@ func NewStore(id, name, location string, participating bool) (*Store, Event, err
 
 }
 
-// EnableParticipation enables a Store from participating in the applicatio
+// EnableParticipation enables a Store in participating in the application
 // and emits a new StoreParticipationEnabled Event
 func (s *Store) EnableParticipation() (Event, error) {
-	// errors when  Participating is already true
+	// errors when Participating is already true
 	if s.Participating {
-		return nil, ErrStoreIsAlreadyNotParticipating
+		return nil, ErrStoreIsAlreadyParticipating
 	}
 
 	// updates the local property
@@ -75,7 +75,7 @@ func (s *Store) EnableParticipation() (Event, error) {
 
 // DisablesParticipation removes a Store from participating in the application
 // and emits a new Store Event
-func (s *Store) DisabledParticipation() (Event, error) {
+func (s *Store) DisableParticipation() (Event, error) {
 	if !s.Participating {
 		return nil, ErrStoreIsAlreadyNotParticipating
 	}
@@ -86,13 +86,13 @@ func (s *Store) DisabledParticipation() (Event, error) {
 	// emit a new Event
 	return StoreParticipationDisabled{
 		eventBase:     eventBase{aggregateID: s.ID, occurredAt: time.Now()},
-		Participating: true,
+		Participating: false,
 	}, nil
 
 }
 
 // Rerand will modify a Stores name and emit a StoreReabarnd event
-func (s *Store) Rerband(name string) (Event, error) {
+func (s *Store) Rebrand(name string) (Event, error) {
 	// emit error when empty
 	if name == "" {
 		return nil, ErrStoreNameIsBlank
@@ -102,7 +102,7 @@ func (s *Store) Rerband(name string) (Event, error) {
 	s.Name = name
 
 	// emit a new Event
-	return StoreRebrand{
+	return StoreRebranded{
 		eventBase: eventBase{aggregateID: s.ID, occurredAt: time.Now()},
 		Name:      name,
 	}, nil

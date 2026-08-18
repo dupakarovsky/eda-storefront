@@ -3,10 +3,18 @@ package domain
 import "time"
 
 const (
+	// Store Events
 	StoreCreatedEvent               = "stores.StoreCretated"
 	StoreParticipationEnabledEvent  = "stores.StoreParticipationEnabled"
 	StoreParticipationDisabledEvent = "stores.StoreParticipationDisabled"
-	StoreRebrandEvent               = "stores.StoreRebrandEvent"
+	StoreRebrandedEvent             = "stores.StoreRebrandEvent"
+
+	// Product Events
+	ProductAddedEvent          = "stores.ProductAdded"
+	ProductRebrandedEvent      = "stores.ProductRebranded"
+	ProductPriceIncreasedEvent = "stores.ProductPriceIncreased"
+	ProductPriceDecreasedEvent = "stores.ProductPriceDecreased"
+	ProductRemovedEvent        = "stores.ProductRemoved"
 )
 
 // Event defines the behavior for any concrete type to implement
@@ -30,6 +38,10 @@ func (e eventBase) OccurredAt() time.Time {
 }
 
 //-----------------------------------------------------------------------------
+
+//============================================================================
+// STORE events
+//============================================================================
 
 // StoreCreated defines a type that implements Events while also carring
 // the store's Name and Location
@@ -71,12 +83,83 @@ func (e StoreParticipationDisabled) EventName() string {
 
 //-----------------------------------------------------------------------------
 
-// StoreRebrand updates the Store name and emits an StoreRebrandEvent
-type StoreRebrand struct {
+// StoreRebranded updates the Store name and emits an StoreRebrandEvent
+type StoreRebranded struct {
 	eventBase
 	Name string
 }
 
-func (StoreRebrand) EventName() string {
-	return StoreRebrandEvent
+func (StoreRebranded) EventName() string {
+	return StoreRebrandedEvent
+}
+
+//-----------------------------------------------------------------------------
+
+//============================================================================
+// PRODUCT events
+//============================================================================
+
+// ProductAdded implentes Events while store information about a Product
+type ProductAdded struct {
+	eventBase
+	StoreID     string
+	Name        string
+	Description string
+	SKU         string
+	Price       float64
+}
+
+func (ProductAdded) EventName() string {
+	return ProductAddedEvent
+}
+
+//-----------------------------------------------------------------------------
+
+// ProductRebranded implements the Events while storing the new product Name
+// and Description
+type ProductRebranded struct {
+	eventBase
+	Name        string
+	Description string
+}
+
+func (ProductRebranded) EventName() string {
+	return ProductRebrandedEvent
+}
+
+//-----------------------------------------------------------------------------
+
+// ProductPriceIncreased implements the Events interface while storing the
+// price increase difference in a product
+type ProductPriceIncreased struct {
+	eventBase
+	Delta float64
+}
+
+func (ProductPriceIncreased) EventName() string {
+	return ProductPriceIncreasedEvent
+}
+
+//-----------------------------------------------------------------------------
+
+// ProductPriceDecreased implements the Events interface while storing the
+// price decrease difference in a product
+type ProductPriceDecreased struct {
+	eventBase
+	Delta float64
+}
+
+func (ProductPriceDecreased) EventName() string {
+	return ProductPriceDecreasedEvent
+}
+
+//-----------------------------------------------------------------------------
+
+// ProductRemoved implement the Event interface
+type ProductRemoved struct {
+	eventBase
+}
+
+func (ProductRemoved) EventName() string {
+	return ProductRemovedEvent
 }
