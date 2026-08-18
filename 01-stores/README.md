@@ -155,12 +155,146 @@ same way we did for `Store`.
 
 #### Test Files
 
-`product_test.go`, following the same shape as `store_test.go` — a shared constructor helper, then one `t.Run` subtest per behavior and its error paths, including the equal-price case for both `IncreasePrice` and `DecreasePrice`.
+`product_test.go`, following the same shape as `store_test.go` — a shared
+constructor helper, then one `t.Run` subtest per behavior and its error paths,
+including the equal-price case for both `IncreasePrice` and `DecreasePrice`.
 
 ```go
 // internal/domain/product_test.go
 ```
 
-One thing to note on the negative-price checks for `IncreasePrice`/`DecreasePrice`: since both already reject any target price on the wrong side of the current price via `<=`/`>=`, and `NewProduct` already guarantees `Price >= 0` at creation, a negative target price for `IncreasePrice` would already be caught by `price <= p.Price` in virtually every real case (you can't increase into negative territory from a non-negative starting price) — the explicit `price < 0` check is mostly a defense-in-depth/clarity thing rather than something reachable through normal use. Worth keeping for a clear error message either way, but wanted to flag that the two checks overlap in coverage rather than being fully independent guards.
+One thing to note on the negative-price checks for
+`IncreasePrice`/`DecreasePrice`: since both already reject any target price on
+the wrong side of the current price via `<=`/`>=`, and `NewProduct` already
+guarantees `Price >= 0` at creation, a negative target price for `IncreasePrice`
+would already be caught by `price <= p.Price` in virtually every real case (you
+can't increase into negative territory from a non-negative starting price) — the
+explicit `price < 0` check is mostly a defense-in-depth/clarity thing rather
+than something reachable through normal use. Worth keeping for a clear error
+message either way, but wanted to flag that the two checks overlap in coverage
+rather than being fully independent guards.
 
 Run `go test ./01-stores/internal/domain/... -v` and let me know how it goes.
+
+## **Phase 2 — Postgres Persistence**
+
+Here's how I'd like to break Phase 2 into Steps, following the placeholder
+pattern for this domain (schema + seed → interface → real adapter → wiring):
+
+**Step 1 — Migrations: schema for `stores` and `products`** Write the
+`golang-migrate` up/down SQL files defining both tables. This also means adding
+a `stores` service database to `docker-compose.yaml` and a `migrate` target to
+the `Makefile`, since nothing runs against Postgres yet without them.
+
+**Step 2 — Repository port interfaces** Define `StoreRepository` and
+`ProductRepository` as interfaces in `internal/domain/`, with `Save` and a
+`FindByID`-style read that returns a rehydrated aggregate. This is the seam
+Phase 4's application layer will depend on, decoupled from Postgres specifics.
+
+**Step 3 — Postgres adapter: `Store`** Implement the `Store` repository against
+real Postgres — `Reconstitute` rehydration and a current-state upsert. This is
+also where we decide row-lock vs optimistic-version-column concurrency for
+`Store` specifically, based on its actual write pattern (infrequent
+rebrand/toggle, low contention).
+
+**Step 4 — Postgres adapter: `Product`** Same shape for `Product`, but its write
+pattern is different (price changes could plausibly race), so we'll look at that
+concurrency decision separately rather than copying Step 3's choice by default.
+
+**Step 5 — Wiring and verification** A throwaway script that creates a store,
+adds a product, saves both, reloads them via `Reconstitute`, and confirms the
+round-trip against a real running container — closing out Phase 2 in a genuinely
+tested state.
+
+Does this breakdown look right, or would you like to split/merge any of these
+before we start on Step 1?
+
+### Step 1: Create Roles
+
+Good — since the pg_hba rules already grant `scram-sha-256` to `all` users over
+TCP (not just `edasuper`), we don't need to touch `pg_hba.rules` at all. The
+only role-specific line is the `peer` one, and it stays scoped to `edasuper`
+since our new roles will connect over TCP like any application does. And since
+we're fine wiping the current volume, I'll fold role creation straight into
+`docker-entrypoint-initdb.d` alongside `init.sh`, rather than writing a separate
+manual-application path.
+
+Three small changes for Step 1:
+
+```env
+# .postgres.env
+POSTGRES_USER=edasuper
+POSTGRES_PASSWORD=supersecure
+POSTGRES_DB=edadb
+POSTGRES_HOST_AUTH_METHOD=scram-sha-256
+EDA_DEV_PASSWORD=devsecure
+EDA_USER_PASSWORD=usersecure
+```
+
+```sh
+# ./postgres/init/02-roles.sh
+#!/bin/bash
+set -e
+
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+    CREATE ROLE eda_dev LOGIN PASSWORD '$EDA_DEV_PASSWORD';
+    CREATE ROLE eda_user LOGIN PASSWORD '$EDA_USER_PASSWORD';
+
+    GRANT CONNECT ON DATABASE $POSTGRES_DB TO eda_dev, eda_user;
+
+    GRANT USAGE, CREATE ON SCHEMA public TO eda_dev;
+    GRANT USAGE ON SCHEMA public TO eda_user;
+
+    ALTER DEFAULT PRIVILEGES FOR ROLE eda_dev IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO eda_user;
+
+    ALTER DEFAULT PRIVILEGES FOR ROLE eda_dev IN SCHEMA public
+        GRANT USAGE, SELECT ON SEQUENCES TO eda_user;
+EOSQL
+```
+
+```yaml
+# ./docker-compose.yaml — postgres.volumes
+volumes:
+    - pg-data:/var/lib/postgresql/data
+    - ./postgres/init/init.sh:/docker-entrypoint-initdb.d/init.sh
+    - ./postgres/init/02-roles.sh:/docker-entrypoint-initdb.d/02-roles.sh
+    - ./postgres/config:/etc/postgresql/conf.d
+```
+
+What's happening here: `docker-entrypoint-initdb.d` runs every script it finds
+in filename order, and by the time it gets to ours, the official image has
+already run `initdb` and created `edasuper` as superuser plus the `edadb`
+database from `.postgres.env` — so `psql --username "$POSTGRES_USER"` in our
+script is connecting as `edasuper` and has full authority to create the two new
+roles. `eda_dev` gets `CREATE` on the `public` schema — enough to run migrations
+— but nothing beyond that; it's not superuser and can't touch roles or other
+databases. `eda_user` gets no DDL rights at all, only what the two
+`ALTER DEFAULT PRIVILEGES` statements grant it. That default-privileges trick is
+the important part: it's not a one-time grant on today's tables, it's a standing
+rule that says "any table `eda_dev` creates from now on, automatically grant
+`eda_user` DML on it" — so Phase 2's migrations, and every migration in every
+later project, don't each need their own manual `GRANT` afterward.
+
+Since the compose file references a new bind-mounted path, this needs a full
+recreation, not a restart — and since you confirmed the current volume only
+holds smoke-test data, the cleanest path is to wipe it rather than trying to
+replay `init.sh`'s idempotency dance on a live volume. Run:
+
+```
+docker compose down -v
+docker compose up -d
+```
+
+Then verify the roles landed by connecting as each one over TCP (this goes
+through the `scram-sha-256`/`127.0.0.1` line in `pg_hba.rules`, not the `peer`
+line, so no `docker compose exec` OS-user complication here):
+
+```
+psql -h 127.0.0.1 -p 5433 -U eda_dev -d edadb -c "\du"
+psql -h 127.0.0.1 -p 5433 -U eda_user -d edadb -c "\du"
+```
+
+Both should connect (password prompt — `devsecure` / `usersecure`) and print the
+role list including `eda_dev` and `eda_user` alongside `edasuper`. Let me know
+what you get.
