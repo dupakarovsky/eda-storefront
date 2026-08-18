@@ -181,27 +181,29 @@ Run `go test ./01-stores/internal/domain/... -v` and let me know how it goes.
 Here's how I'd like to break Phase 2 into Steps, following the placeholder
 pattern for this domain (schema + seed → interface → real adapter → wiring):
 
-**Step 1 — Migrations: schema for `stores` and `products`** Write the
+**Step 1 - Create new database roles**
+
+**Step 2 — Migrations: schema for `stores` and `products`** Write the
 `golang-migrate` up/down SQL files defining both tables. This also means adding
 a `stores` service database to `docker-compose.yaml` and a `migrate` target to
 the `Makefile`, since nothing runs against Postgres yet without them.
 
-**Step 2 — Repository port interfaces** Define `StoreRepository` and
+**Step 3 — Repository port interfaces** Define `StoreRepository` and
 `ProductRepository` as interfaces in `internal/domain/`, with `Save` and a
 `FindByID`-style read that returns a rehydrated aggregate. This is the seam
 Phase 4's application layer will depend on, decoupled from Postgres specifics.
 
-**Step 3 — Postgres adapter: `Store`** Implement the `Store` repository against
+**Step 4 — Postgres adapter: `Store`** Implement the `Store` repository against
 real Postgres — `Reconstitute` rehydration and a current-state upsert. This is
 also where we decide row-lock vs optimistic-version-column concurrency for
 `Store` specifically, based on its actual write pattern (infrequent
 rebrand/toggle, low contention).
 
-**Step 4 — Postgres adapter: `Product`** Same shape for `Product`, but its write
+**Step 5 — Postgres adapter: `Product`** Same shape for `Product`, but its write
 pattern is different (price changes could plausibly race), so we'll look at that
 concurrency decision separately rather than copying Step 3's choice by default.
 
-**Step 5 — Wiring and verification** A throwaway script that creates a store,
+**Step 6 — Wiring and verification** A throwaway script that creates a store,
 adds a product, saves both, reloads them via `Reconstitute`, and confirms the
 round-trip against a real running container — closing out Phase 2 in a genuinely
 tested state.
@@ -300,3 +302,88 @@ role list including `eda_dev` and `eda_user` alongside `edasuper`. Let me know
 what you get.
 
 #### Update the .env file
+
+Right — but not to `eda_dev` for everything. The `.env` file backs
+`config.Load()`, which every actual _service_ (the `stores` service in Phase 4,
+`foundation-smoketest` today) uses to open its runtime connection pool. Runtime
+traffic should go through `eda_user` — it's application DML only, no DDL —
+matching the least-privilege point of doing this in the first place. `eda_dev`
+is reserved for the migration step specifically, which we'll run separately (via
+the `Makefile`'s upcoming `migrate` target, likely its own connection string)
+rather than through this same `.env`/`config.Load()` path — mixing schema-owner
+credentials into the app's runtime config would quietly undo the privilege split
+we just built.
+
+```env
+# .env
+DB_HOST=127.0.0.1
+DB_PORT=5433
+DB_USER=eda_user
+DB_PASSWORD=usersecure
+DB_DATABASE=edadb
+DB_SSL_MODE=disable
+NATS_URL=nats://127.0.0.1:4223
+```
+
+After saving that, re-run the smoke test (`make smoke`) to confirm the pool
+still connects — now as `eda_user` instead of `edasuper`. It should succeed
+identically, since `NewPool` only pings the database and `eda_user` has
+`CONNECT` on `edadb`; nothing in the smoke test yet issues DDL or writes that
+would expose the privilege difference.
+
+Once that's confirmed, we're done with Step 1 — roles provisioned,
+`pg_hba.rules` verified as already permissive enough, and the app's runtime
+config now pointed at the least-privileged role. Ready to move to Step 2
+(migrations for `stores`/`products`, where `eda_dev`'s credentials will actually
+get used for the first time), or any questions on the role split first?
+
+### **Step 2 — Migrations: schema for `stores` and `products`**
+
+Before writing the schema itself, there's a decision `system-state.md` already
+flagged: _"One database (`edadb`) so far; one per service as each is added."_
+Right now everything — including `eda_dev`/`eda_user` — is scoped to the single
+`edadb` database created by `POSTGRES_DB`. `stores` needs its own database, not
+a schema inside `edadb`, to keep services from ever being able to reach into
+each other's tables even at the Postgres level.
+
+One wrinkle: `ALTER DEFAULT PRIVILEGES` is scoped per-database, not global — the
+grants we set up in `02-roles.sh` only apply within `edadb`. A new database
+needs its own `CREATE DATABASE` plus its own copy of those same grants run
+_inside_ it.
+
+```sh
+# ./postgres/init/03-stores-db.sh
+#!/bin/bash
+set -e
+
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+    CREATE DATABASE storesdb OWNER eda_dev;
+EOSQL
+
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname storesdb <<-EOSQL
+    GRANT CONNECT ON DATABASE storesdb TO eda_dev, eda_user;
+
+    GRANT USAGE, CREATE ON SCHEMA public TO eda_dev;
+    GRANT USAGE ON SCHEMA public TO eda_user;
+
+    ALTER DEFAULT PRIVILEGES FOR ROLE eda_dev IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO eda_user;
+
+    ALTER DEFAULT PRIVILEGES FOR ROLE eda_dev IN SCHEMA public
+        GRANT USAGE, SELECT ON SEQUENCES TO eda_user;
+EOSQL
+```
+
+`CREATE DATABASE ... OWNER eda_dev` means `eda_dev` — not `edasuper` — owns
+`storesdb` outright, which matters later since ownership is what lets `eda_dev`
+run migrations without needing extra grants. The second block has to run as a
+separate `psql` invocation targeting `storesdb` directly, because you can't `\c`
+databases mid-script the way `GRANT`/`ALTER DEFAULT PRIVILEGES` need scoping
+here — each database's default-privilege rule is independent.
+
+This means adding a fourth mount line for `03-stores-db.sh` in
+`docker-compose.yaml`, alongside `01-init.sh`/`02-roles.sh`, and another
+`docker compose down -v && docker compose up -d` to pick it up on a fresh
+volume. Does `storesdb` work as the naming convention for you (matching later
+`depotdb`/`basketsdb`/etc. per service), or would you rather name these
+differently before I lock it into the migration connection strings next?
