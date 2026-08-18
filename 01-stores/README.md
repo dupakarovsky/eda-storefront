@@ -298,3 +298,5 @@ psql -h 127.0.0.1 -p 5433 -U eda_user -d edadb -c "\du"
 Both should connect (password prompt — `devsecure` / `usersecure`) and print the
 role list including `eda_dev` and `eda_user` alongside `edasuper`. Let me know
 what you get.
+
+#### Update the .env file
