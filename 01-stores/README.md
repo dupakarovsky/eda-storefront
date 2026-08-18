@@ -353,25 +353,6 @@ _inside_ it.
 
 ```sh
 # ./postgres/init/03-stores-db.sh
-#!/bin/bash
-set -e
-
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-    CREATE DATABASE storesdb OWNER eda_dev;
-EOSQL
-
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname storesdb <<-EOSQL
-    GRANT CONNECT ON DATABASE storesdb TO eda_dev, eda_user;
-
-    GRANT USAGE, CREATE ON SCHEMA public TO eda_dev;
-    GRANT USAGE ON SCHEMA public TO eda_user;
-
-    ALTER DEFAULT PRIVILEGES FOR ROLE eda_dev IN SCHEMA public
-        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO eda_user;
-
-    ALTER DEFAULT PRIVILEGES FOR ROLE eda_dev IN SCHEMA public
-        GRANT USAGE, SELECT ON SEQUENCES TO eda_user;
-EOSQL
 ```
 
 `CREATE DATABASE ... OWNER eda_dev` means `eda_dev` — not `edasuper` — owns
@@ -387,3 +368,69 @@ This means adding a fourth mount line for `03-stores-db.sh` in
 volume. Does `storesdb` work as the naming convention for you (matching later
 `depotdb`/`basketsdb`/etc. per service), or would you rather name these
 differently before I lock it into the migration connection strings next?
+
+#### Migration files
+
+Locking those in: `id`/`store_id` as `TEXT PRIMARY KEY`/`TEXT` (indexed
+automatically as the PK), `price` as `NUMERIC(10,2)` with a `CHECK` guarding the
+domain's own non-negative invariant at the DB layer too, audit columns on both
+tables, no `version` column yet.
+
+Here are the migration files, following `golang-migrate`'s paired up/down
+convention and the `01-stores/migrations/` path from the folder structure we
+agreed on:
+
+```sql
+-- 01-stores/migrations/0001_create_stores_and_products.up.sql
+```
+
+```sql
+-- 01-stores/migrations/0001_create_stores_and_products.down.sql
+```
+
+Assuming it's (or will be) ignored, I'd add the migrate-specific values to it
+rather than inventing a second env file — keeps all database credentials in one
+gitignored place instead of splitting them across two:
+
+```env
+# .postgres.env
+POSTGRES_USER=edasuper
+POSTGRES_PASSWORD=supersecure
+POSTGRES_DB=edadb
+POSTGRES_HOST_AUTH_METHOD=scram-sha-256
+EDA_DEV_PASSWORD=devsecure
+EDA_USER_PASSWORD=usersecure
+MIGRATE_DB_HOST=127.0.0.1
+MIGRATE_DB_PORT=5433
+MIGRATE_DB_NAME=storesdb
+```
+
+```makefile
+# Makefile
+include .postgres.env
+export
+
+.PHONY: migrate-up migrate-down
+
+migrate-up:
+	migrate -path 01-stores/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
+		up
+
+migrate-down:
+	migrate -path 01-stores/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
+		down 1
+```
+
+`include .postgres.env` pulls those `KEY=value` lines in as Make variables, and
+`export` passes them through to the shell each recipe line runs in — so
+`$(EDA_DEV_PASSWORD)` in the target body resolves at runtime from the untracked
+file, and the only thing that ends up in git is the variable name, never the
+value. Only `.postgres.env` needs to be gitignored for this to hold; the
+`Makefile` itself stays fully trackable with zero secrets in it.
+
+Can you confirm `.postgres.env`'s current gitignore status, and if it needs
+adding, go ahead and do that plus `git rm --cached .postgres.env` if it was ever
+actually committed? Once that's settled, run `make migrate-up` and let me know
+what you get.

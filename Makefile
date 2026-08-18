@@ -1,5 +1,6 @@
 COMPOSE := docker compose
 
+
 .PHONY: up down logs ps smoke 
 
 up:
@@ -26,3 +27,21 @@ smoke:
 # -----
 format:
 	mdformat --wrap=80 ./**/README.md
+
+## --- Migrations 
+
+# Makefile
+include .postgres.env
+export
+
+.PHONY: migrate-up migrate-down
+
+migrate-up:
+	@migrate -path 01-stores/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
+		up
+
+migrate-down:
+	@migrate -path 01-stores/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
+		down 1
