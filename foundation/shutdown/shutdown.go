@@ -23,10 +23,10 @@ func Run(logger *slog.Logger, srv *http.Server, shutdownTimeout time.Duration) e
 	go func() {
 		logger.Info("🚀 starting server",
 			"srv-addr", srv.Addr,
-			"srv-read-header-timeout", srv.ReadHeaderTimeout,
-			"srv-write-timeout", srv.WriteTimeout,
-			"srv-idle-timeout", srv.IdleTimeout,
-			"srv-shutdown-timeout", shutdownTimeout,
+			"srv-read-header-timeout", srv.ReadHeaderTimeout.String(),
+			"srv-write-timeout", srv.WriteTimeout.String(),
+			"srv-idle-timeout", srv.IdleTimeout.String(),
+			"srv-shutdown-timeout", shutdownTimeout.String(),
 		)
 		errs <- srv.ListenAndServe()
 		logger.Info("goroutine terminated")

@@ -1,5 +1,8 @@
-COMPOSE := docker compose
+## ============================================================================
+## --- Container -- 
+## ============================================================================
 
+COMPOSE := docker compose
 
 .PHONY: up down logs ps smoke 
 
@@ -24,13 +27,10 @@ smoke:
 	chmod +x ./bin/foundation-smoketest
 	./bin/foundation-smoketest
 
-# -----
-format:
-	mdformat --wrap=80 ./**/README.md
+## ============================================================================
+## --- Migrations -- 
+## ============================================================================
 
-## --- Migrations 
-
-# Makefile
 include .postgres.env
 export
 
@@ -45,3 +45,26 @@ migrate-down:
 	@migrate -path 01-stores/migrations \
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
 		down 1
+
+
+
+## ============================================================================
+## --- Stores -- 
+## ============================================================================
+
+.PHONY: stores-run
+
+stores-run:
+	@echo 'Running stores service...'
+	@mkdir -p ./01-stores/bin
+	GOOS=linux GOARCH=amd64 go build -o=./01-stores/bin/stores ./01-stores/cmd/service/
+	chmod +x ./01-stores/bin/stores
+	cd ./01-stores && ./bin/stores
+
+## ============================================================================
+## --- Utils -- 
+## ============================================================================
+
+format:
+	mdformat --wrap=80 ./**/README.md
+

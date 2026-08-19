@@ -710,13 +710,112 @@ domain event isn't the wire format).
 
 **Step 3 — Wire aggregate actions to publish.** Add an application-layer piece
 that, after a repository `Save` succeeds, publishes the resulting event via
-`foundationnats.Publisher`. This is where we decide save-then-publish ordering
-and what happens if publish fails after save succeeds.
+`foundationnats.Publisher`.
 
-**Step 4 — Smoke test.** A throwaway `cmd/nats-smoketest` (or extend the
+**Step 4 — Falure-Mode.** Explicitly decide what happens when publish fails
+after save succeeds — retry, outbox-style deferred publish, log-and-continue, or
+something else — and implement whichever approach we land on.
+
+**Step 5 — Smoke test.** A throwaway `cmd/nats-smoketest` (or extend the
 repo-smoketest) that creates a `Store`, saves it, publishes `StoreCreated`, and
 you verify it landed using `nats sub` or the NATS UI.
 
 ---
 
 ### **Step 1 — Define the `stores` stream and subject scheme**
+
+## Step 1 — The `stores` stream and subject scheme
+
+Here's the reset Phase 3 Step plan:
+
+**Step 1 — Composition root and service boot.** Build `module.go` (config load →
+logger → Postgres pool → NATS connect) and `cmd/service/main.go` wiring it
+together, using `foundation/config`, `foundation/logging`,
+`foundation/postgres`, and `foundation/nats` — the same pieces
+`foundation-smoketest` already proved work, now assembled for real as
+`01-stores`'s own entry point. No domain logic touched. Verified by starting the
+service and confirming it connects to both live containers cleanly (and shuts
+down gracefully via `foundation/shutdown`).
+
+**Step 2 — The `stores` stream and subject scheme.** Define the subject naming
+convention (`stores.store.*` / `stores.product.*`, per Option A already agreed)
+and wire the `EnsureStream` call into `module.go`'s NATS setup. Verified against
+the live `stores` stream via `nats stream info`.
+
+**Step 3 — Event → payload mapping.** `internal/events/publisher.go`: marshal a
+domain `Event` into its NATS wire payload, distinct from the domain event
+struct.
+
+**Step 4 — Wire aggregate actions to publish.** After a repository `Save`
+succeeds, publish the resulting event. Happy path only.
+
+**Step 5 — Failure modes.** Decide and implement what happens when publish fails
+after save succeeds.
+
+**Step 6 — Smoke test.** Exercise the real service boot path (from Step 1)
+end-to-end: create a `Store`, save it, publish `StoreCreated`, verify it lands
+on NATS for real.
+
+This also means Step 1 is doing double duty — it's the piece Phase 4's "Wiring,
+Compose, and Verification" description in `journey_progress.md` was going to
+need anyway, built now instead of deferred, since Phase 3 can't publish anything
+without a live NATS connection to publish through.
+
+One thing I need before laying out Step 1's code: do you want `module.go`'s
+`NewModule`-style constructor (or whatever we call it) to own the
+`context.Context` used for connecting to Postgres/NATS at startup, or should
+`main.go` build the context and pass it in? `court-reservation`'s pattern is
+worth checking for precedent here if you have it handy — otherwise I'll default
+to `main.go` owning it, since that's what `shutdown.Run`'s signature already
+implies (it takes a `*http.Server`, not a context, and does its own signal-based
+context creation internally for the shutdown phase specifically, not the startup
+phase).
+
+### Step 1 Module.go
+
+```go
+// 01-stores/module.go
+```
+
+```go
+// 01-stores/cmd/service/main.go
+```
+
+What's happening here: `main.go` still owns `context.Background()` exactly as
+you described — `stores.New` receives it as a parameter rather than constructing
+its own, and anything downstream that eventually needs a timed context (the
+router's `TimeoutMiddleware`, per request) derives its own from `r.Context()` at
+request time, not from this startup context. This mirrors `court-reservation`'s
+split cleanly: `main()` handles config/logger/composition, and everything past
+that point is either handed off to `module.go` (startup-time dependency
+construction) or to the router/middleware stack (per-request concerns) — no
+long-lived startup context leaking into request handling.
+
+The bigger design choice worth flagging is that `Module` doesn't just hold
+`Pool`/`NC`/`JS`/`Publisher` — it already wires `StoreRepo`/`ProductRepo` too,
+using the exact repository constructors Phase 2 built. Nothing in Phase 3
+strictly needs the repositories wired yet, but this is genuinely the composition
+root's job description, and building it here means Step 6's smoke test (and
+eventually Phase 4's ConnectRPC handlers) can just reach for `mod.StoreRepo`
+instead of constructing it a second time somewhere else.
+
+`/health` exists purely to make "are all components online" something you can
+actually observe from outside the process, rather than trusting the startup log
+lines alone — same motivation as `foundation-smoketest`'s `/ping`, but checking
+liveness only (`pool.Ping`, `nc.Status()`) rather than exercising a real write
+path, since that's this step's job, not Step 1's.
+
+One thing to double check on your end before running: your `.env` (or real
+environment) needs `DB_USER`/`DB_PASSWORD` pointed at `eda_user` against
+`storesdb`, per what Phase 2 already set up — not the superuser or `eda_dev`,
+since this is runtime traffic, not migrations.
+
+To verify: run `go run ./cmd/service` from `01-stores/`. You should see the
+`🗄️ postgres pool ready` and `nats connected` log lines, then
+`🚀 starting server` from `shutdown.Run`. In another terminal,
+`curl localhost:8080/health` (adjust the port to whatever `SRV_PORT` resolves
+to) should return `ok` with a 200. Then `Ctrl+C` the running service and confirm
+you see the graceful `shutdown complete` log line rather than an abrupt kill.
+
+Let me know what you get, or paste whatever error surfaces if something doesn't
+connect.
