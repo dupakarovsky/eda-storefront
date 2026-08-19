@@ -691,3 +691,32 @@ For the smoke test, extend `repo-smoketest/main.go` to add a product under
 Run it and confirm both the console output (price should print as `8.5`, no
 precision drift) and the raw row via `psql` (`SELECT * FROM products;` — `price`
 should read `8.50`). Let me know what you get.
+
+---
+
+## **Phase 3 — Event Publishing**
+
+Here's how I'd like to break Phase 3 into Steps:
+
+**Step 1 — Define the `stores` stream and subject scheme.** Decide the subject
+naming convention (using `foundationnats.Subject(service, aggregate, event)` —
+e.g. `stores.store.StoreCreated`), and write the `EnsureStream` call that
+registers the `stores` stream with the right subject wildcard pattern.
+
+**Step 2 — Event → payload mapping.** Build `internal/events/publisher.go`: a
+small type that takes a domain `Event` and marshals it to the JSON payload
+actually sent over NATS, separate from the domain event struct itself (the
+domain event isn't the wire format).
+
+**Step 3 — Wire aggregate actions to publish.** Add an application-layer piece
+that, after a repository `Save` succeeds, publishes the resulting event via
+`foundationnats.Publisher`. This is where we decide save-then-publish ordering
+and what happens if publish fails after save succeeds.
+
+**Step 4 — Smoke test.** A throwaway `cmd/nats-smoketest` (or extend the
+repo-smoketest) that creates a `Store`, saves it, publishes `StoreCreated`, and
+you verify it landed using `nats sub` or the NATS UI.
+
+---
+
+### **Step 1 — Define the `stores` stream and subject scheme**
