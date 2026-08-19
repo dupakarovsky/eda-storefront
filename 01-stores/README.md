@@ -517,3 +517,131 @@ construction, it needs rows. Does that framing match what you were getting at,
 and if so — do we want that query surface addressed now in Phase 2, or deferred
 until Phase 4 when the ConnectRPC API actually defines what queries the
 storefront needs?
+
+### Step 4 — Postgres adapter
+
+Good — that keeps `StoreRepository`/`ProductRepository` as `Save`/`FindByID`
+exactly as drafted in Step 3, with no `Delete` or list methods added, and no
+CQRS split introduced at this stage. That interface is already compiling cleanly
+against the domain types, so Step 3 is done.
+
+Moving to Step 4: the Postgres adapter for `Store`. Before writing it, one thing
+needs deciding per ADL 0002 — whether `Store`'s concurrency control is row-level
+locking (`SELECT ... FOR UPDATE`) or optimistic version-column CAS, decided by
+its actual write pattern rather than defaulted.
+
+`Store`'s writes are `Rebrand`, `EnableParticipation`, `DisableParticipation` —
+infrequent, low-contention, typically triggered by a single store owner acting
+on their own store. That's a different shape from, say,
+`Product.IncreasePrice`/`DecreasePrice`, where a race is at least plausible (two
+admins editing pricing concurrently). Given `court-reservation` already proved
+out row-level locking successfully and `Store`'s contention risk is low, I'd
+lean toward `SELECT ... FOR UPDATE` here — simpler code, no extra schema column,
+and appropriate to the actual risk.
+
+#### Adapter
+
+Here's the adapter. Row-level locking only means something if the row stays
+locked across the read-modify-write sequence — a single `SELECT ... FOR UPDATE`
+issued through a connection pool with no explicit transaction locks and
+immediately releases, which makes the lock pointless. So the adapter needs to
+accept either a plain pool (for reads with no locking intent) or a transaction
+(where the lock actually holds until commit) — both `*pgxpool.Pool` and `pgx.Tx`
+satisfy the same method set in pgx v5, so a small `Executor` interface lets the
+same adapter code work with either, and Phase 4's command handlers will be the
+ones deciding which to hand in.
+
+```go
+// 01-stores/internal/postgres/store_repository.go
+```
+
+`Save` is a genuine upsert — `ON CONFLICT (id) DO UPDATE` — so it covers both
+the first-time creation from `NewStore` and later updates from
+`Rebrand`/`EnableParticipation` with the same call, matching the interface's
+single-`Save` design from Step 3. `created_at` is deliberately left out of both
+the column list assignment and the `SET` clause on conflict, so it's only ever
+written once by its `DEFAULT now()` at insert and never touched again.
+`FindByID`'s `FOR UPDATE` is real but currently inert when called through a bare
+`*pgxpool.Pool` — it'll only actually hold a lock once Phase 4 constructs this
+repository with a `pgx.Tx` spanning the load, the domain method call, and the
+`Save`, then commits. That wiring doesn't exist yet, so for now this adapter is
+correctly shaped but the locking is dormant.
+
+For a smoke test, here's a throwaway script — adjust the import path if your
+`01-stores/go.mod` module name differs:
+
+```go
+// 01-stores/cmd/repo-smoketest/main.go
+```
+
+Run it with `go run ./cmd/repo-smoketest` from `01-stores/`. Expected output is
+`loaded: &{ID:store-001 Name:Corner Bakery Location:Belo Horizonte Participating:false}`
+— let me know what you actually get, and whether the module path needed
+adjusting.
+
+#### Resolving Timestamp issues
+
+That's not actually a bug in the row — it's a display artifact of two different
+sessions using two different `TimeZone` settings, and it's worth confirming that
+distinction carefully rather than assuming the timestamp itself is wrong.
+`TIMESTAMPTZ` in Postgres always stores an absolute instant internally as UTC;
+what varies per-session is only how it's _rendered_ back to you, governed by
+that session's `TimeZone` GUC. Your `storesdb` container is rendering in UTC
+(Docker's official Postgres image defaults to UTC unless told otherwise), while
+your local host's Postgres instance apparently has its session `TimeZone` set to
+`America/Sao_Paulo` (`-03`), matching your actual location. `11:51:56+00` and
+`08:52:20-03` aren't disagreeing about _when_ something happened — those are the
+same instant, just labeled in two different zones.
+
+Worth confirming directly, since it's a quick check: run `SHOW TimeZone;`
+against both the `storesdb` container and your local `test` database, and you
+should see `UTC` and something like `America/Sao_Paulo` respectively.
+
+The actual decision is whether we want the container itself defaulting to UTC
+display or to local time. I'd lean toward leaving it as UTC — it's the standard,
+boring choice for a server that (eventually, per the roadmap) is meant to run
+the same way regardless of which machine or region it's deployed in, and every
+stored value converts to any zone correctly on the client/application side
+regardless of the server's display default. Explicitly pinning it also removes
+ambiguity: right now we're relying on the image's default rather than a value
+we've deliberately set, which is exactly the kind of
+implicit-default-vs-explicit-decision distinction ADL 0006 already flagged for
+`pg_hba.conf`.
+
+If you'd like, I can add `timezone = 'UTC'` to `hardening.conf` (alongside the
+existing `password_encryption`/logging/`max_connections` settings) so it's a
+stated decision rather than an inherited default — same file, same pattern, no
+new mount needed. Want that, or would you rather set the container to
+`America/Sao_Paulo` instead so raw `psql` inspection during development reads in
+
+local time?
+
+#### Local .env file for 01-store
+
+Good call — a hardcoded connection string was exactly the wrong pattern to establish right after we spent Step 1 careful about not leaking credentials into git. Two changes.
+
+First, the `hardening.conf` addition:
+
+```conf
+# postgres/config/hardening.conf — add alongside existing settings
+timezone = 'UTC'
+```
+
+That's an `include_dir`-mounted config change, so per ADL 0006's own finding, a restart or reload won't pick it up — it needs `docker compose up` to recreate the container.
+
+Second, the smoke test rewritten against `config.Load()`:
+
+```go
+// 01-stores/cmd/repo-smoketest/main.go
+```
+
+This needs `01-stores/.env` present with `DB_DATABASE=storesdb` and `DB_USER=eda_user`/`DB_PASSWORD` matching what we set up in Step 1 — `config.Load()` calls `godotenv.Load()` against the working directory, so it needs its own `.env` alongside `01-stores/go.mod`, separate from the workspace root's.
+
+One more thing worth locking in given your actual concern — a hardcoded URI in one file is a one-time mistake, but _any_ throwaway smoke test getting committed is a recurring risk as long as we keep creating them under normal source paths. Worth adding a rule to `.gitignore` now rather than remembering to `git rm --cached` after the fact each time:
+
+```gitignore
+# .gitignore
+**/cmd/*smoketest*/
+```
+
+That pattern catches any future `cmd/<name>-smoketest/` directory in any project, workspace-wide, so a throwaway script is unreachable by `git add` by construction rather than by discipline. Want that added, and should I also verify `01-stores/.env` exists with the right values before you re-run this?

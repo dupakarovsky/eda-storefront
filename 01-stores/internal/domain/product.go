@@ -104,6 +104,8 @@ func (p *Product) IncreasePrice(price float64) (Event, error) {
 
 }
 
+// DecreasePrice will decresee the price of a Product and emit the
+// corresponing Event
 func (p *Product) DecreasePrice(price float64) (Event, error) {
 
 	// guard against negative values
