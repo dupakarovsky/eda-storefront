@@ -2,19 +2,18 @@ package domain
 
 import "time"
 
+// (corrected constants block)
 const (
-	// Store Events
-	StoreCreatedEvent               = "stores.StoreCretated"
-	StoreParticipationEnabledEvent  = "stores.StoreParticipationEnabled"
-	StoreParticipationDisabledEvent = "stores.StoreParticipationDisabled"
-	StoreRebrandedEvent             = "stores.StoreRebrandEvent"
+	StoreCreatedEvent               = "StoreCreated"
+	StoreParticipationEnabledEvent  = "StoreParticipationEnabled"
+	StoreParticipationDisabledEvent = "StoreParticipationDisabled"
+	StoreRebrandedEvent             = "StoreRebranded"
 
-	// Product Events
-	ProductAddedEvent          = "stores.ProductAdded"
-	ProductRebrandedEvent      = "stores.ProductRebranded"
-	ProductPriceIncreasedEvent = "stores.ProductPriceIncreased"
-	ProductPriceDecreasedEvent = "stores.ProductPriceDecreased"
-	ProductRemovedEvent        = "stores.ProductRemoved"
+	ProductAddedEvent          = "ProductAdded"
+	ProductRebrandedEvent      = "ProductRebranded"
+	ProductPriceIncreasedEvent = "ProductPriceIncreased"
+	ProductPriceDecreasedEvent = "ProductPriceDecreased"
+	ProductRemovedEvent        = "ProductRemoved"
 )
 
 // Event defines the behavior for any concrete type to implement

@@ -899,3 +899,92 @@ Any questions before we move to Step 3 — building
 actual NATS wire payload?
 
 ### **Step 3 — Event → payload mapping.**
+
+Before writing the publisher itself, there's a real snag worth stopping on — not
+a design choice this time, but a discrepancy between what Phase 1 already built
+and what the Step 2 subject scheme assumes.
+
+Look at `domain/events.go`'s constants:
+
+```go
+StoreCreatedEvent               = "stores.StoreCretated"
+StoreParticipationEnabledEvent  = "stores.StoreParticipationEnabled"
+StoreParticipationDisabledEvent = "stores.StoreParticipationDisabled"
+StoreRebrandedEvent             = "stores.StoreRebrandEvent"
+
+ProductAddedEvent          = "stores.ProductAdded"
+ProductRebrandedEvent      = "stores.ProductRebranded"
+ProductPriceIncreasedEvent = "stores.ProductPriceIncreased"
+ProductPriceDecreasedEvent = "stores.ProductPriceDecreased"
+ProductRemovedEvent        = "stores.ProductRemoved"
+```
+
+Three problems if the publisher naively calls `event.EventName()` to build the
+subject's final segment:
+
+1. **A typo**: `StoreCreatedEvent` is literally `"stores.StoreCretated"` —
+   missing the `a`.
+1. **An inconsistency**: `StoreRebrandedEvent` is `"stores.StoreRebrandEvent"` —
+   the only one with a trailing `Event`, and it doesn't match the struct name
+   `StoreRebranded` the way every other constant matches its struct.
+1. **A structural mismatch with Step 2's own scheme**: every one of these
+   already has a `"stores."` prefix baked in. If the publisher does
+   `foundationnats.Subject("stores", "store", event.EventName())`, you get
+   `stores.store.stores.StoreCretated` — a doubled, typo'd, ugly subject — not
+   the clean `stores.store.StoreCreated` we designed and already registered on
+   the stream in Step 2.
+
+This wasn't visible until now because `EventName()` has only ever been used
+internally (tests asserting the right event type fired) — Step 3 is the first
+place these strings actually leave the process and become a real wire contract.
+
+Two ways to resolve it:
+
+**Option A — Fix `domain/events.go` directly.** Strip the `"stores."` prefix and
+the `Event` suffix inconsistency, so the constants become just the bare type
+names: `StoreCreatedEvent = "StoreCreated"`,
+`StoreRebrandedEvent = "StoreRebranded"`, etc. Then `event.EventName()` cleanly
+slots into `foundationnats.Subject("stores", "store", event.EventName())` with
+no special-casing anywhere. This is the same discipline Phase 1 already used
+once — recall the `<=`/`>=` price-comparison fix, caught and corrected before it
+became load-bearing anywhere else. Nothing external depends on these values yet
+(no consumer service exists, nothing's been published), so it's a free fix right
+now and gets expensive the longer it waits.
+
+```go
+// 01-stores/internal/domain/events.go (corrected constants block)
+const (
+    StoreCreatedEvent               = "StoreCreated"
+    StoreParticipationEnabledEvent  = "StoreParticipationEnabled"
+    StoreParticipationDisabledEvent = "StoreParticipationDisabled"
+    StoreRebrandedEvent             = "StoreRebranded"
+
+    ProductAddedEvent          = "ProductAdded"
+    ProductRebrandedEvent      = "ProductRebranded"
+    ProductPriceIncreasedEvent = "ProductPriceIncreased"
+    ProductPriceDecreasedEvent = "ProductPriceDecreased"
+    ProductRemovedEvent        = "ProductRemoved"
+)
+```
+
+Everything else in the file — the `Event` interface, `eventBase`, every concrete
+struct and its `EventName()` method — stays untouched, since they all just
+return the constant, not a hardcoded string. This is purely a constants-block
+edit.
+
+What's happening here: since every `EventName()` method returns one of these
+constants rather than a literal string, fixing the constants alone propagates
+correctly everywhere `EventName()` is called — no other file needs touching.
+This is also exactly why the earlier "does the test suite still pass" question
+resolves itself cleanly: if `store_test.go`/`product_test.go` assert
+`event.EventName() == domain.StoreCreatedEvent` (comparing against the same
+constant, not a hardcoded string), the tests are still internally consistent
+after this change and require no edits either. If any test instead hardcoded the
+string `"stores.StoreCretated"` directly rather than referencing the constant,
+that would be the one place needing an update — worth a quick check on your end.
+
+Go ahead and apply that edit to `events.go`, then run your existing Phase 1 test
+suite (`go test ./internal/domain/...` from `01-stores/`) to confirm
+everything's still green with the corrected constants. Once that's confirmed, we
+can move into the actual publisher — mapping a domain `Event` into the JSON
+payload that goes out over NATS.
