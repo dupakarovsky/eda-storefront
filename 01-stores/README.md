@@ -518,7 +518,7 @@ and if so — do we want that query surface addressed now in Phase 2, or deferre
 until Phase 4 when the ConnectRPC API actually defines what queries the
 storefront needs?
 
-### Step 4 — Postgres adapter
+### Step 4 — Postgres adapter: Store
 
 Good — that keeps `StoreRepository`/`ProductRepository` as `Save`/`FindByID`
 exactly as drafted in Step 3, with no `Delete` or list methods added, and no
@@ -618,7 +618,9 @@ local time?
 
 #### Local .env file for 01-store
 
-Good call — a hardcoded connection string was exactly the wrong pattern to establish right after we spent Step 1 careful about not leaking credentials into git. Two changes.
+Good call — a hardcoded connection string was exactly the wrong pattern to
+establish right after we spent Step 1 careful about not leaking credentials into
+git. Two changes.
 
 First, the `hardening.conf` addition:
 
@@ -627,7 +629,9 @@ First, the `hardening.conf` addition:
 timezone = 'UTC'
 ```
 
-That's an `include_dir`-mounted config change, so per ADL 0006's own finding, a restart or reload won't pick it up — it needs `docker compose up` to recreate the container.
+That's an `include_dir`-mounted config change, so per ADL 0006's own finding, a
+restart or reload won't pick it up — it needs `docker compose up` to recreate
+the container.
 
 Second, the smoke test rewritten against `config.Load()`:
 
@@ -635,13 +639,55 @@ Second, the smoke test rewritten against `config.Load()`:
 // 01-stores/cmd/repo-smoketest/main.go
 ```
 
-This needs `01-stores/.env` present with `DB_DATABASE=storesdb` and `DB_USER=eda_user`/`DB_PASSWORD` matching what we set up in Step 1 — `config.Load()` calls `godotenv.Load()` against the working directory, so it needs its own `.env` alongside `01-stores/go.mod`, separate from the workspace root's.
+This needs `01-stores/.env` present with `DB_DATABASE=storesdb` and
+`DB_USER=eda_user`/`DB_PASSWORD` matching what we set up in Step 1 —
+`config.Load()` calls `godotenv.Load()` against the working directory, so it
+needs its own `.env` alongside `01-stores/go.mod`, separate from the workspace
+root's.
 
-One more thing worth locking in given your actual concern — a hardcoded URI in one file is a one-time mistake, but _any_ throwaway smoke test getting committed is a recurring risk as long as we keep creating them under normal source paths. Worth adding a rule to `.gitignore` now rather than remembering to `git rm --cached` after the fact each time:
+One more thing worth locking in given your actual concern — a hardcoded URI in
+one file is a one-time mistake, but _any_ throwaway smoke test getting committed
+is a recurring risk as long as we keep creating them under normal source paths.
+Worth adding a rule to `.gitignore` now rather than remembering to
+`git rm --cached` after the fact each time:
 
 ```gitignore
 # .gitignore
 **/cmd/*smoketest*/
 ```
 
-That pattern catches any future `cmd/<name>-smoketest/` directory in any project, workspace-wide, so a throwaway script is unreachable by `git add` by construction rather than by discipline. Want that added, and should I also verify `01-stores/.env` exists with the right values before you re-run this?
+That pattern catches any future `cmd/<name>-smoketest/` directory in any
+project, workspace-wide, so a throwaway script is unreachable by `git add` by
+construction rather than by discipline. Want that added, and should I also
+verify `01-stores/.env` exists with the right values before you re-run this?
+
+### **Step 5 — Postgres adapter: `Product`**
+
+Good — consistent with `Store`, and the contention risk is real enough to
+justify it. Here's the `Product` adapter:
+
+```go
+// 01-stores/internal/postgres/product_repository.go
+```
+
+Same shape as `Store`'s adapter — upsert `Save`, `FOR UPDATE` `FindByID` —
+reusing the same `Executor` interface, so no new abstraction needed. On the
+`float64`↔`NUMERIC(10,2)` conversion: `pgx/v5` natively converts between
+`NUMERIC` and Go's `float64` on both `Exec` binding and `Scan`, so no manual
+string formatting or `pgtype.Numeric` handling is needed here — the driver pays
+that cost internally. That's fine for this direction (Go float in, Postgres
+numeric out and back) precisely because the `CHECK (price >= 0)` constraint and
+`NUMERIC(10,2)`'s fixed-point storage on the Postgres side are what actually
+prevent drift; the float64 round-trip through pgx isn't doing arithmetic, just
+representation conversion at the boundary.
+
+For the smoke test, extend `repo-smoketest/main.go` to add a product under
+`store-001` and reload it:
+
+```go
+// 01-stores/cmd/repo-smoketest/main.go — add after the store FindByID block
+```
+
+Run it and confirm both the console output (price should print as `8.5`, no
+precision drift) and the raw row via `psql` (`SELECT * FROM products;` — `price`
+should read `8.50`). Let me know what you get.

@@ -7,15 +7,7 @@ import (
 
 	"github.com/dupakarovsky/eda-storefront/stores/internal/domain"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
-
-// Executor defines the behaviour for any concrete type to Execute SQL queries
-// againts the database.
-type Executor interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
 
 // StoreRepository holds any type the implements the Executor interface
 type StoreRepository struct {
