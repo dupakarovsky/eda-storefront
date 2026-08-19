@@ -108,3 +108,16 @@ func (s *Store) Rebrand(name string) (Event, error) {
 	}, nil
 
 }
+
+//-----------------------------------------------------------------------------
+
+// ReconstituteStore will return a Store value from the provided parameters.
+// Used for retrieving values from the database and creating a new Store instance
+func ReconstituteStore(id, name, location string, participating bool) *Store {
+	return &Store{
+		ID:            id,
+		Name:          name,
+		Location:      location,
+		Participating: participating,
+	}
+}

@@ -133,3 +133,18 @@ func (p *Product) Remove() (Event, error) {
 		eventBase: eventBase{aggregateID: p.ID, occurredAt: time.Now()},
 	}, nil
 }
+
+//------------------------------------------------------------------------------
+
+// ReconstituteProduct will return a Product value from the provided parameters.
+// Used for retrieving values from the database and creating a new Product instance
+func ReconstituteProduct(id, storeID, name, description, sku string, price float64) *Product {
+	return &Product{
+		ID:          id,
+		StoreID:     storeID,
+		Name:        name,
+		Description: description,
+		SKU:         sku,
+		Price:       price,
+	}
+}

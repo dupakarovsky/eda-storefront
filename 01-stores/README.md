@@ -434,3 +434,86 @@ Can you confirm `.postgres.env`'s current gitignore status, and if it needs
 adding, go ahead and do that plus `git rm --cached .postgres.env` if it was ever
 actually committed? Once that's settled, run `make migrate-up` and let me know
 what you get.
+
+### Step 3 — Repository port interfaces\*\*
+
+Two files, following the same one-name-per-concern convention as
+`internal/domain/events.go`. First, the interfaces themselves:
+
+```go
+// 01-stores/internal/domain/store_repository.go
+```
+
+```go
+// 01-stores/internal/domain/product_repository.go
+```
+
+Second, `Reconstitute` constructors alongside the existing ones in `store.go`
+and `product.go`:
+
+```go
+// 01-stores/internal/domain/store.go — add below NewStore
+```
+
+```go
+// 01-stores/internal/domain/product.go — add below NewProduct
+```
+
+A few choices worth flagging. `Save` is one method for both insert and update —
+since ADL 0002 committed to current-state rows, not event sourcing, there's no
+meaningful "create vs. update" distinction at the repository boundary; the
+Postgres adapter will implement it as a genuine
+`INSERT ... ON CONFLICT DO UPDATE` upsert in Step 4, but the _interface_ doesn't
+need to know that. `FindByID` returns `(*Store, error)` rather than
+`(*Store, bool)`, with a dedicated `ErrStoreNotFound`/`ErrProductNotFound`
+sentinel — matching Go's idiomatic error-based "not found" signaling rather than
+a boolean flag, and giving the Postgres adapter (Step 4) something concrete to
+map `pgx.ErrNoRows` onto. And `Reconstitute` exists as a separate constructor
+from `NewStore`/`NewProduct` specifically because it skips validation and
+doesn't raise a domain event — it's rebuilding an aggregate that's already
+known-valid from a database row, not creating a new one, so re-running
+`NewStore`'s blank-name check or emitting a spurious `StoreCreated` event would
+be wrong on both counts.
+
+These are pure interfaces and constructors with no external dependencies, so
+there's nothing to run yet — just `go build ./...` from `01-stores/` to confirm
+it compiles cleanly against the existing domain types. Any questions on the
+`Save`-as-upsert or the `Reconstitute` design before we move to Step 4, the
+actual Postgres adapter for `Store`?
+
+That's exactly the right question to press on, and answering it makes the shape
+of the interface fall out naturally rather than being a stylistic pick.
+
+In the book's event-sourced model, `stores`/`products` in Postgres _isn't_ a
+queryable table of current state at all — it's an append-only event stream
+(`internal/es`, per ADL 0002's research). You genuinely cannot run
+`SELECT * FROM products WHERE store_id = ?` against that; there's no row to
+select, only a sequence of events you'd have to replay. That's _why_ the book
+needs a second, separate read-model repository (`CatalogRepository`) — the
+write-side event stream is structurally incapable of answering read queries, so
+a denormalized projection has to exist somewhere or nothing could ever be listed
+or searched.
+
+We don't have that problem, because ADL 0002 already solved it a different way:
+our `stores`/`products` tables in Postgres _are_ current-state rows — the same
+table Step 2 just created is directly queryable right now
+(`SELECT * FROM products WHERE store_id = ?` works today, no projection
+required). So the read model isn't a separate thing we still need to build —
+it's the same table our `StoreRepository`/`ProductRepository` already point at.
+The question isn't "do we need a second repository," it's narrower: does
+listing/searching need to go through the aggregate-shaped `Load`/`Save`
+interface at all, or can it be its own simpler query path returning flat
+rows/DTOs directly from the same table, alongside (not instead of)
+`Load`/`Save`?
+
+That reframes your original concern precisely: it's not that `Load`/`Save` is
+too shallow as an aggregate repository — it's correctly shaped for that job.
+It's that _some_ read-query surface (list products by store, search by SKU,
+etc.) is still genuinely missing, and it doesn't belong bolted onto
+`StoreRepository`/`ProductRepository` as extra methods returning
+`*Store`/`*Product` — a "list all products in a store" doesn't need full
+aggregate rehydration, domain event capability, or invariant-checked
+construction, it needs rows. Does that framing match what you were getting at,
+and if so — do we want that query surface addressed now in Phase 2, or deferred
+until Phase 4 when the ConnectRPC API actually defines what queries the
+storefront needs?
