@@ -9,6 +9,7 @@ import (
 	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
 	foundationpostgres "github.com/dupakarovsky/eda-storefront/foundation/postgres"
 	"github.com/dupakarovsky/eda-storefront/stores/internal/domain"
+	storesevents "github.com/dupakarovsky/eda-storefront/stores/internal/events"
 	"github.com/dupakarovsky/eda-storefront/stores/internal/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
@@ -91,6 +92,16 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	// ------------------
 
 	logger.Info("nats connected", "url", cfg.NATS.URL, "status", nc.Status().String())
+
+	// create a new stream with a Name a Subects for stores
+	_, err = foundationnats.EnsureStream(ctx, js, storesevents.StreamName, storesevents.StreamSubjects)
+	if err != nil {
+		nc.Close()
+		pool.Close()
+		return nil, fmt.Errorf("ensuring stores stream: %w", err)
+	}
+
+	logger.Info("🌊 stream ensured", "name", storesevents.StreamName, "subjects", storesevents.StreamSubjects)
 
 	// instantiate a new publisher to publish to the jetstream
 	publisher := foundationnats.NewPublisher(js)

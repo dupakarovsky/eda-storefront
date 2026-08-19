@@ -696,36 +696,6 @@ should read `8.50`). Let me know what you get.
 
 ## **Phase 3 — Event Publishing**
 
-Here's how I'd like to break Phase 3 into Steps:
-
-**Step 1 — Define the `stores` stream and subject scheme.** Decide the subject
-naming convention (using `foundationnats.Subject(service, aggregate, event)` —
-e.g. `stores.store.StoreCreated`), and write the `EnsureStream` call that
-registers the `stores` stream with the right subject wildcard pattern.
-
-**Step 2 — Event → payload mapping.** Build `internal/events/publisher.go`: a
-small type that takes a domain `Event` and marshals it to the JSON payload
-actually sent over NATS, separate from the domain event struct itself (the
-domain event isn't the wire format).
-
-**Step 3 — Wire aggregate actions to publish.** Add an application-layer piece
-that, after a repository `Save` succeeds, publishes the resulting event via
-`foundationnats.Publisher`.
-
-**Step 4 — Falure-Mode.** Explicitly decide what happens when publish fails
-after save succeeds — retry, outbox-style deferred publish, log-and-continue, or
-something else — and implement whichever approach we land on.
-
-**Step 5 — Smoke test.** A throwaway `cmd/nats-smoketest` (or extend the
-repo-smoketest) that creates a `Store`, saves it, publishes `StoreCreated`, and
-you verify it landed using `nats sub` or the NATS UI.
-
----
-
-### **Step 1 — Define the `stores` stream and subject scheme**
-
-## Step 1 — The `stores` stream and subject scheme
-
 Here's the reset Phase 3 Step plan:
 
 **Step 1 — Composition root and service boot.** Build `module.go` (config load →
@@ -819,3 +789,113 @@ you see the graceful `shutdown complete` log line rather than an abrupt kill.
 
 Let me know what you get, or paste whatever error surfaces if something doesn't
 connect.
+
+#### .Env file and NATS Name
+
+Good — that keeps `foundation-smoketest` self-contained the same way `01-stores`
+now is, and the reasoning on `.postgres.env` is spot on: it's superuser-scoped
+specifically for `docker-entrypoint-initdb.d` bootstrap work (creating roles,
+databases, the `eda_dev`/`eda_user` split), a different concern entirely from a
+Go service's own runtime credentials.
+
+To recap where that leaves things: move the root `.env` into
+`foundation-smoketest/`, add `NATS_NAME=stores-service` to `01-stores/.env`, and
+apply the `cd`-into-directory fix to the `stores-run` Makefile target. Once
+those three are in place, we're back to verifying Step 1 for real.
+
+Go ahead and make those changes, then run `make stores-run` from the repo root.
+You should see the `🗄️ postgres pool ready`, `nats connected`, and
+`🚀 starting server` log lines in sequence, and `curl localhost:8080/health`
+(adjust the port to whatever `SRV_PORT` resolves to in your `.env`, default
+`8080`) should return `ok`. Then `Ctrl+C` the running process and confirm you
+get a clean `shutdown complete` line rather than an abrupt kill. Let me know
+what you get, or paste the error if something doesn't come up cleanly.
+
+### **Step 2 — The `stores` stream and subject scheme.**
+
+Picking back up from the agreed Option A scheme, here's the subjects file and
+the `EnsureStream` wiring into `module.go`.
+
+```go
+// 01-stores/internal/events/stream.go
+```
+
+And the addition to `module.go`, right after the NATS connection is established
+and before the repositories are constructed:
+
+```go
+// 01-stores/module.go (addition after NATS connect, before repository construction)
+```
+
+This needs a new import in `module.go`:
+
+```go
+// 01-stores/module.go (new import)
+storesevents "github.com/dupakarovsky/eda-storefront/stores/internal/events"
+```
+
+What's happening here: I aliased the import `storesevents` rather than plain
+`events`, consistent with the `foundation`-prefix convention you set up in Step
+1 — `events` alone risks colliding with a stdlib-adjacent or third-party
+`events` package down the line, and the alias makes it unambiguous at the call
+site that this is `01-stores`'s own event-subject definitions, not
+`foundation`'s NATS layer.
+
+Notice the error path explicitly closes `nc` and `pool` before returning — this
+matches the pattern already established for the NATS-connect failure case (where
+`pool.Close()` runs before returning), just extended one step further now that
+there's a third thing that can fail after two things have already succeeded. If
+`EnsureStream` fails, we don't want a half-initialized `Module` leaking a live
+Postgres pool and NATS connection that nothing will ever call `Close()` on,
+since the constructor is returning `nil, err` rather than a `*Module` the caller
+could clean up itself.
+
+The stream itself: `EnsureStream` uses `CreateOrUpdateStream`, so this is safe
+to call every time the service boots — first run creates the `stores` stream
+with `FileStorage`, every subsequent boot just confirms the config still matches
+(or updates it in place if the subject list ever changes) rather than erroring
+on "stream already exists." That's what lets us treat this as a boot-time step
+rather than a separate one-off migration-style command.
+
+To verify: run `make stores-run` again. You should see the same log sequence as
+before, plus a new `🌊 stream ensured` line showing `name=stores` and both
+subjects. Then, in another terminal, check it landed for real — either
+`docker compose exec nats nats stream info stores` (you may need the `nats` CLI
+installed inside or alongside the container) or the NATS monitoring UI at
+`http://127.0.0.1:8222` (per your `docker-compose.yaml`'s exposed `8222` port)
+under the JetStream section — either should show a `stores` stream with
+`stores.store.*` and `stores.product.*` as its configured subjects.
+
+Let me know what you get.
+
+That's enough to confirm success, even without the CLI. The server log's
+`🌊 stream ensured` line already tells us `CreateOrUpdateStream` returned without
+error for exactly the config we specified, and `/jsz`'s `"streams": 1`
+independently confirms JetStream now has one real stream registered on the
+server side — not just a client-side success, but server-side state that
+persisted.
+
+The `docker compose exec nats stream info stores` failure is just because the
+official `nats` image only ships the `nats-server` binary, not the `nats` CLI
+client — two separate binaries, and the container only has the first. Not worth
+installing the CLI into the container for this; the monitoring HTTP endpoints
+already give us what we need.
+
+If you want to see the actual subjects rather than just the count, `/jsz` takes
+query params — this'll show the full stream config:
+
+```bash
+curl "localhost:8222/jsz?streams=true"
+```
+
+That should return a `stream_detail` (or similar, depending on server version)
+block showing `name: stores` and both `stores.store.*` / `stores.product.*`
+subjects, which would be the closest thing to `stream info`'s output without the
+CLI. Optional at this point though — between the clean boot log and `/jsz`'s
+stream count, Step 2 is confirmed.
+
+Any questions before we move to Step 3 — building
+`internal/events/publisher.go`, the piece that maps a domain `Event` to its
+actual NATS wire payload?
+
+### **Step 3 — Event → payload mapping.**
