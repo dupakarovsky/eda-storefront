@@ -1044,3 +1044,50 @@ pattern to validate first — want to re-run your round-trip test against just
 `StoreCreated` to confirm the `data` field now comes out as
 `{"name":"...","location":"..."}` in real snake_case, before I write out the
 remaining seven payload types and their switch cases?
+
+### Step 4 — Wiring aggregate actions to publish (happy path)
+
+One more small design decision before the code: `CreateStore`'s `Execute` needs to build a NATS subject for the event it just published, which means it needs to know the aggregate segment (`"store"` vs `"product"`) for whatever event came back. Hardcoding `foundationnats.Subject("stores", "store", event.EventName())` directly in `CreateStore` works today, but it's the same kind of fragile, easy-to-typo string-building we already caught and fixed twice this phase (the `events.go` constants, the PascalCase payload issue). Better to centralize subject resolution in the `events` package itself, next to `toPayload`, using the same exhaustive-switch-with-error-default discipline:
+
+```go
+// 01-stores/internal/events/subject.go
+```
+
+Now the use case itself:
+
+```go
+// 01-stores/internal/application/create_store.go
+```
+
+And wiring it into the composition root:
+
+```go
+// 01-stores/module.go (new field on Module)
+CreateStoreUC *application.CreateStore
+```
+
+```go
+// 01-stores/module.go (construction, after storeRepo/productRepo are built)
+createStoreUC := application.NewCreateStore(storeRepo, publisher, logger)
+```
+
+```go
+// 01-stores/module.go (add to returned Module literal)
+CreateStoreUC: createStoreUC,
+```
+
+What's happening here: `Execute` is deliberately sequential and unguarded — save first, then publish, no rollback, no transaction spanning both. That's intentional for this step; it's exactly the happy-path-only scope we agreed to, and it's what makes Step 5 a real, separate design decision rather than something quietly baked in here. Right now, if `Save` succeeds and `Publish` fails, the store exists in Postgres but no `StoreCreated` ever reaches NATS — a real gap we're choosing to see clearly before deciding how to close it, rather than papering over it with a guess.
+
+Notice `CreateStore` depends on `domain.StoreRepository` (the interface) and `*foundationnats.Publisher` (the concrete type) — not `domain.Store` directly and not an interface for the publisher. The repository interface is already established by Phase 2; the publisher stays concrete because `foundation` doesn't define a `Publisher` interface for us to depend on instead, and introducing one here, in `01-stores`, would mean inventing an abstraction `foundation` itself doesn't own — better to accept the concrete type for now than to add a speculative interface with exactly one implementation.
+
+Since this touches real Postgres and NATS, it's worth a small throwaway smoke command to verify — separate from Step 6's more complete smoke test, just enough to confirm `Execute` actually works end to end:
+
+```go
+// 01-stores/cmd/createstore-smoketest/main.go
+```
+
+This matches Phase 2's `repo-smoketest` naming pattern, so it's already covered by the `**/cmd/*smoketest*/` `.gitignore` rule you added back then — no extra ignore-list edits needed.
+
+Run it with `go run ./cmd/createstore-smoketest` from `01-stores/` (make sure the real service from `make stores-run` isn't already holding the port or NATS name conflicting — this is a separate short-lived process, so that shouldn't matter, but worth knowing). You should see `🗄️ postgres pool ready`, `nats connected`, `🌊 stream ensured`, then `event published` with the subject `stores.store.StoreCreated` and a stream/sequence number, then `store created`. Afterward, `curl "localhost:8222/jsz?streams=true"` should show the stream's message count incremented by one from wherever Step 2 left it.
+
+Let me know what you get.
