@@ -19,6 +19,8 @@ logs:
 ps:
 	$(COMPOSE) ps
 
+nats-box/stores:
+	$(COMPOSE) exec nats-box nats stream info stores --server nats://nats:4222 
 
 smoke:
 	@echo 'Building application...'

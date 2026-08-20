@@ -1047,7 +1047,15 @@ remaining seven payload types and their switch cases?
 
 ### Step 4 — Wiring aggregate actions to publish (happy path)
 
-One more small design decision before the code: `CreateStore`'s `Execute` needs to build a NATS subject for the event it just published, which means it needs to know the aggregate segment (`"store"` vs `"product"`) for whatever event came back. Hardcoding `foundationnats.Subject("stores", "store", event.EventName())` directly in `CreateStore` works today, but it's the same kind of fragile, easy-to-typo string-building we already caught and fixed twice this phase (the `events.go` constants, the PascalCase payload issue). Better to centralize subject resolution in the `events` package itself, next to `toPayload`, using the same exhaustive-switch-with-error-default discipline:
+One more small design decision before the code: `CreateStore`'s `Execute` needs
+to build a NATS subject for the event it just published, which means it needs to
+know the aggregate segment (`"store"` vs `"product"`) for whatever event came
+back. Hardcoding `foundationnats.Subject("stores", "store", event.EventName())`
+directly in `CreateStore` works today, but it's the same kind of fragile,
+easy-to-typo string-building we already caught and fixed twice this phase (the
+`events.go` constants, the PascalCase payload issue). Better to centralize
+subject resolution in the `events` package itself, next to `toPayload`, using
+the same exhaustive-switch-with-error-default discipline:
 
 ```go
 // 01-stores/internal/events/subject.go
@@ -1076,18 +1084,104 @@ createStoreUC := application.NewCreateStore(storeRepo, publisher, logger)
 CreateStoreUC: createStoreUC,
 ```
 
-What's happening here: `Execute` is deliberately sequential and unguarded — save first, then publish, no rollback, no transaction spanning both. That's intentional for this step; it's exactly the happy-path-only scope we agreed to, and it's what makes Step 5 a real, separate design decision rather than something quietly baked in here. Right now, if `Save` succeeds and `Publish` fails, the store exists in Postgres but no `StoreCreated` ever reaches NATS — a real gap we're choosing to see clearly before deciding how to close it, rather than papering over it with a guess.
+What's happening here: `Execute` is deliberately sequential and unguarded — save
+first, then publish, no rollback, no transaction spanning both. That's
+intentional for this step; it's exactly the happy-path-only scope we agreed to,
+and it's what makes Step 5 a real, separate design decision rather than
+something quietly baked in here. Right now, if `Save` succeeds and `Publish`
+fails, the store exists in Postgres but no `StoreCreated` ever reaches NATS — a
+real gap we're choosing to see clearly before deciding how to close it, rather
+than papering over it with a guess.
 
-Notice `CreateStore` depends on `domain.StoreRepository` (the interface) and `*foundationnats.Publisher` (the concrete type) — not `domain.Store` directly and not an interface for the publisher. The repository interface is already established by Phase 2; the publisher stays concrete because `foundation` doesn't define a `Publisher` interface for us to depend on instead, and introducing one here, in `01-stores`, would mean inventing an abstraction `foundation` itself doesn't own — better to accept the concrete type for now than to add a speculative interface with exactly one implementation.
+Notice `CreateStore` depends on `domain.StoreRepository` (the interface) and
+`*foundationnats.Publisher` (the concrete type) — not `domain.Store` directly
+and not an interface for the publisher. The repository interface is already
+established by Phase 2; the publisher stays concrete because `foundation`
+doesn't define a `Publisher` interface for us to depend on instead, and
+introducing one here, in `01-stores`, would mean inventing an abstraction
+`foundation` itself doesn't own — better to accept the concrete type for now
+than to add a speculative interface with exactly one implementation.
 
-Since this touches real Postgres and NATS, it's worth a small throwaway smoke command to verify — separate from Step 6's more complete smoke test, just enough to confirm `Execute` actually works end to end:
+Since this touches real Postgres and NATS, it's worth a small throwaway smoke
+command to verify — separate from Step 6's more complete smoke test, just enough
+to confirm `Execute` actually works end to end:
 
 ```go
 // 01-stores/cmd/createstore-smoketest/main.go
 ```
 
-This matches Phase 2's `repo-smoketest` naming pattern, so it's already covered by the `**/cmd/*smoketest*/` `.gitignore` rule you added back then — no extra ignore-list edits needed.
+This matches Phase 2's `repo-smoketest` naming pattern, so it's already covered
+by the `**/cmd/*smoketest*/` `.gitignore` rule you added back then — no extra
+ignore-list edits needed.
 
-Run it with `go run ./cmd/createstore-smoketest` from `01-stores/` (make sure the real service from `make stores-run` isn't already holding the port or NATS name conflicting — this is a separate short-lived process, so that shouldn't matter, but worth knowing). You should see `🗄️ postgres pool ready`, `nats connected`, `🌊 stream ensured`, then `event published` with the subject `stores.store.StoreCreated` and a stream/sequence number, then `store created`. Afterward, `curl "localhost:8222/jsz?streams=true"` should show the stream's message count incremented by one from wherever Step 2 left it.
+Run it with `go run ./cmd/createstore-smoketest` from `01-stores/` (make sure
+the real service from `make stores-run` isn't already holding the port or NATS
+name conflicting — this is a separate short-lived process, so that shouldn't
+matter, but worth knowing). You should see `🗄️ postgres pool ready`,
+`nats connected`, `🌊 stream ensured`, then `event published` with the subject
+`stores.store.StoreCreated` and a stream/sequence number, then `store created`.
+Afterward, `curl "localhost:8222/jsz?streams=true"` should show the stream's
+message count incremented by one from wherever Step 2 left it.
 
 Let me know what you get.
+
+#### Inspectign NATS
+
+The `/jsz` output confirms it independently — `messages: 1`, `first_seq: 1`,
+`last_seq: 1`, `bytes: 230`, `num_subjects: 1` all line up exactly with what the
+log already told us. Two independent sources (Postgres row, JetStream state) now
+agree Step 4 worked end to end.
+
+On the network name: almost certainly not a real failure, just a naming
+mismatch. Docker Compose namespaces networks by prefixing them with the project
+name (normally your directory name, `eda-storefront`) unless a network is
+explicitly given a top-level `name:` override. Your `docker-compose.yaml`
+declares `eda-net` under `networks:`, but the network Docker actually created is
+probably `eda-storefront_eda-net`. Quick check:
+
+```bash
+docker network ls | grep eda
+```
+
+That'll show you the real name to pass to `--network` on the next attempt.
+
+On your suggestion — I'd lean away from replacing the `nats:2.12` image in
+`docker-compose.yaml` itself. That image is specifically the well-tested,
+minimal server image; swapping it for a CLI-bundled variant (or building a
+custom one) means now maintaining a custom image just for occasional debugging
+convenience, and any future NATS version bump has to be re-applied to your
+custom build instead of just bumping a tag. Better to add `nats-box` as its own
+**separate, non-serving service** in `docker-compose.yaml` — no ports, no
+dependency on it starting, just sitting on `eda-net` so it's always one
+`docker compose exec` away:
+
+```yaml
+# docker-compose.yaml (new service, added to existing services: block)
+nats-box:
+    image: natsio/nats-box:latest
+    container_name: eda-nats-box
+    restart: unless-stopped
+    networks:
+        - eda-net
+```
+
+Then anytime you want to inspect NATS, it's just:
+
+```bash
+docker compose exec nats-box nats stream info stores --server nats://nats:4222
+```
+
+Using the compose _service name_ (`nats`) as the hostname rather than the
+container name (`eda-nats`) — Compose's internal DNS resolves service names
+automatically on the shared network, which is one less thing to remember
+correctly versus the explicit `container_name`. Worth adding this now since it's
+cheap, permanent, and every future project (`depot`, `baskets`, and onward) will
+want the same debugging visibility into their own streams.
+
+That's optional infrastructure polish though — not blocking. Step 4 itself is
+fully confirmed: `CreateStore.Execute` saves to Postgres, builds the envelope,
+resolves the subject, and publishes to JetStream, verified against two
+independent live sources.
+
+Any questions before Step 5 — deciding what happens when `Publish` fails after
+`Save` already succeeded?

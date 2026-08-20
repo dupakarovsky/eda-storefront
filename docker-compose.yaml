@@ -32,6 +32,13 @@ services:
         networks:
             - eda-net
 
+    nats-box:
+        image: natsio/nats-box:latest
+        container_name: eda-nats-box
+        restart: unless-stopped
+        networks:
+            - eda-net
+
 volumes:
     pg-data:
     nats-data:
