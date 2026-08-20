@@ -988,3 +988,59 @@ suite (`go test ./internal/domain/...` from `01-stores/`) to confirm
 everything's still green with the corrected constants. Once that's confirmed, we
 can move into the actual publisher — mapping a domain `Event` into the JSON
 payload that goes out over NATS.
+
+#### Added the Payload types for Event Publishing
+
+Good instinct — and the two things you flagged aren't cosmetic, they're actually
+two faces of the same underlying issue: reusing the domain event struct directly
+for JSON encoding conflates two things that should be independent — the domain's
+internal shape and the wire contract another service will code against.
+PascalCase leaking through is just the visible symptom; the reconstitution
+concern is the real one.
+
+Here's the fix: a dedicated payload type per event, living in the `events`
+package (not `domain`), with real `json` tags — and a mapping step that converts
+a `domain.Event` into its corresponding payload type. `domain/events.go` stays
+exactly as it is, untouched by any transport concern.
+
+```go
+// 01-stores/internal/events/payloads.go
+package events
+```
+
+And the conversion — a type switch mapping each concrete `domain.Event` to its
+payload:
+
+```go
+// 01-stores/internal/events/payload_mapper.go
+```
+
+And `NewEnvelope` changes to call it instead of marshaling `event` directly:
+
+```go
+
+```
+
+What this fixes and why it matters beyond casing: the `default` case in
+`toPayload` is the real payoff. Every domain event now needs an explicit,
+deliberate payload mapping before it can ever be published — there's no path
+where a ninth event type gets added to `domain/events.go` later and silently
+starts flowing over NATS with a Pascal-case, unreviewed shape, because
+forgetting to add its case here means the publisher returns an error instead of
+guessing. That's a much better failure mode than "it worked, but the wire format
+is an accident of Go's default marshaling."
+
+It also directly answers your reconstitution concern: nothing in this design
+ever unmarshals back into `domain.StoreCreated`. A consumer decodes `Envelope`,
+sees `event_name: "StoreCreated"`, and unmarshals `Data` into whatever local
+shape it wants — it never needs to import `stores`' domain package at all, which
+is exactly the boundary ADL 0004 already draws (contracts travel forward,
+implementations don't). The payload types in `events.go` are themselves the
+contract — literally what `CONTRACT.md`'s payload section will end up
+documenting almost verbatim.
+
+I've only written `StoreCreatedPayload`/`ProductAddedPayload` above as the
+pattern to validate first — want to re-run your round-trip test against just
+`StoreCreated` to confirm the `data` field now comes out as
+`{"name":"...","location":"..."}` in real snake_case, before I write out the
+remaining seven payload types and their switch cases?
