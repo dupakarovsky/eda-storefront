@@ -66,15 +66,29 @@ func (uc *CreateStore) Execute(ctx context.Context, id, name, location string) (
 		return nil, fmt.Errorf("resolving subject: %w", err)
 	}
 
-	// publish the event payload to NATS
-	ack, err := uc.publisher.Publish(ctx, subject, payload)
+	// publish the event payload to NATS using the retry-logic
+	ack, err := publishWithRetry(ctx, uc.publisher, uc.logger, subject, payload)
 	if err != nil {
-		return nil, fmt.Errorf("publishing event: %w", err)
+		uc.logger.Error("event publish exhausted retries; store saved but event not delivered",
+			"aggregate_id", event.AggregateID(),
+			"event_name", event.EventName(),
+			"subject", subject,
+			"error", err,
+		)
+
+		//INFO:: If publisheWithRetry fails, the store remains created in the database.
+		//Only the event was not pubslihed. This is a bit unusual, but right now it's what
+		//we can do until we use a more robusts solution that uses Transaction outbox.
+
+		return store, fmt.Errorf("publishing event: %w", err)
 	}
 
-	// event published. emit a log
+	// event successfuly published
 	// ---------------------------
+
+	// event published. emit a log
 	uc.logger.Info("event puslished", "subject", subject, "stream", ack.Stream, "seq", ack.Sequence)
 
+	// return the Store with no errors
 	return store, nil
 }

@@ -1185,3 +1185,155 @@ independent live sources.
 
 Any questions before Step 5 — deciding what happens when `Publish` fails after
 `Save` already succeeded?
+
+## Step 5 — Failure modes: publish fails after save succeeds
+
+This is worth treating carefully — not because Phase 3 needs a perfect solution,
+but because whatever we decide here is a pattern that will repeat in every
+future service (`depot`, `baskets`, `ordering`, and onward all face the
+identical shape of problem: local write succeeds, integration event needs to
+reach NATS). Getting the reasoning right once, now, is worth more than getting
+`01-stores` narrowly correct.
+
+The core problem: `CreateStore.Execute` currently does `Save` then `Publish`,
+sequentially, with no coordination between them. Four real ways to fail:
+
+1. `Save` fails — no problem, nothing was persisted, `Execute` returns the
+   error, caller retries the whole operation. Already handled correctly today.
+1. `Publish` fails — the store now exists in Postgres, but the event that was
+   supposed to tell the rest of the system about it never left the building.
+   `depot`/`baskets` (once they exist) will never know this store exists,
+   silently and permanently, unless something notices and retries.
+1. The process crashes between `Save` returning and `Publish` being called —
+   same outcome as #2, just triggered by a crash instead of a NATS error.
+1. `Publish` succeeds but the ack times out or is lost — genuinely rare with
+   JetStream's ack semantics, but worth naming as distinct from a hard publish
+   failure.
+
+Three real options for handling #2/#3, in increasing order of correctness and
+complexity:
+
+**Option A — Log and continue.** `Publish` fails, `Execute` logs it at `Error`
+level with everything needed to manually reconcile (aggregate ID, event name,
+timestamp) and returns the error to the caller anyway — the store row still
+exists, but the caller now knows integration didn't fully complete. No automatic
+recovery; a human (or a future tool) has to notice the error log and manually
+replay. Simplest to build, weakest guarantee — genuinely fine for a
+learning-journey pace where no real consumer exists yet to notice the gap, but
+it's a permanent silent-drop risk if left as the final answer.
+
+**Option B — Retry with backoff, inline.** Before giving up, `Execute` retries
+`Publish` a few times with backoff (NATS being briefly unreachable is the
+realistic failure mode here, more than a permanent one). Closes the
+transient-blip case cleanly, but does nothing for the
+crash-between-save-and-publish case (#3) — if the process dies mid-retry, the
+retry loop dies with it, and nothing durable remembers the event needed to go
+out. Moderate complexity, partial guarantee.
+
+**Option C — Transactional outbox.** Instead of publishing directly, `Execute`
+writes the event into an `outbox` table in the _same database transaction_ as
+the aggregate save — so either both the store row and the outbox row land, or
+neither does; there's no window where one exists without the other, even across
+a crash. A separate process (a goroutine started in `module.go`, or later a
+dedicated worker) polls the outbox table and publishes pending rows to NATS,
+marking them published (or deleting them) once the ack comes back. This is the
+pattern that actually survives all four failure cases above, including a crash
+mid-operation, because durability comes from Postgres's own transaction
+guarantees rather than from the NATS call succeeding in the same breath as the
+save. It's real added complexity for this phase, though — a new table, a new
+migration, a poller/worker loop, and a decision about polling interval vs.
+something event-driven (e.g. `LISTEN`/`NOTIFY`).
+
+Given ADL 0002's own framing — current-state persistence was chosen specifically
+because event sourcing wasn't needed for this system, but that ADL explicitly
+kept cross-service event-driven integration as the one thing that must stay
+fully real — I think this is worth naming honestly: **Option C is the
+actually-correct answer for a system whose whole premise is real, durable,
+event-driven integration**, and it's also a pattern that will pay for itself the
+moment `depot`/`baskets` exist and start depending on never missing a
+`StoreCreated`. But it's also a meaningfully bigger scope increase within Phase
+3 than Steps 1–4 have been, and there's a reasonable argument for landing Option
+A now (cheap, honest about its own limitation) and treating the outbox pattern
+as a deliberate, separate future decision — possibly its own ADL — once a second
+service actually exists to make the gap concrete rather than hypothetical.
+
+Given the scope of this project (a learning journey, not production
+infrastructure under real load) and that no consumer exists yet to be harmed by
+the gap, which direction do you want to take: build the outbox pattern now
+(Option C), take the cheaper retry approach (Option B), or log-and-continue with
+the gap explicitly documented as a deferred decision (Option A)?
+
+Good call — landing the honest, cheaper fix now and treating the outbox as a
+deliberate future decision (with its own ADL noting _why_ it was deferred, not
+just that it was) keeps this phase moving without pretending Option B is more
+than it is.
+
+Here's the retry wrapper, then the updated `Execute`.
+
+```go
+// 01-stores/internal/application/publish_retry.go
+```
+
+```go
+// 01-stores/internal/application/create_store.go (Execute, updated)
+```
+
+What's happening here: `publishWithRetry` retries up to three times total, with
+delays of 200ms, then 400ms (`baseDelay * 2^(attempt-1)`) — enough to ride out a
+brief NATS blip (a reconnect window, a momentary network hiccup) without making
+a failed request hang for an unreasonable amount of time. It respects `ctx`
+throughout — if the caller's context is canceled or times out mid-retry, we stop
+waiting immediately rather than sleeping through a delay pointlessly.
+
+The more interesting design choice is in `Execute`'s final error branch: **it
+returns `store, err` — a non-nil store alongside a non-nil error** —
+deliberately breaking the usual Go convention of "error means the other return
+value is worthless." Here, the store genuinely was saved; only the publish
+failed. A caller that only checks `err != nil` and discards everything still
+does the safe thing (treats the whole operation as failed), but a caller that
+wants to distinguish "nothing happened" from "the write succeeded but
+integration didn't" can inspect `store` even when `err` is non-nil. That
+distinction is exactly what Option A's "log and continue" was gesturing at, now
+captured as a real return-value signal rather than only a log line.
+
+The `Error`-level log line is the honest acknowledgment of this option's real
+limitation — after three attempts, if NATS is still unreachable, this line is
+the only trace that a store now exists without a corresponding event ever
+reaching the stream. Nothing automatically retries it further; a human reading
+logs (or, later, a real outbox) is the only recovery path. Worth searching for
+eventually if this pattern needs a permanent fix.
+
+For the ADL, here's a draft — next number after `0006` in your `docs/adl/`
+sequence:
+
+```markdown
+
+```
+
+To verify the retry path actually does something (rather than trusting it by
+reading the code), the cleanest test is forcing a real publish failure: stop the
+NATS container, run the smoke test, watch it retry and eventually fail with the
+`Error` log line, then restart NATS.
+
+```bash
+docker compose stop nats
+```
+
+Then, from `01-stores/`, run `go run ./cmd/createstore-smoketest` with a fresh
+store ID (not `store-smoketest-1`, since that one already exists) — you should
+see `postgres pool ready` succeed, then the NATS _connect_ itself likely fail
+immediately at startup (since `Connect` happens before `CreateStore.Execute` is
+ever called) rather than getting as far as the retry loop at all. That's worth
+noting as a real limitation of this specific test: a stopped NATS container
+fails the initial connection, not the publish call — so it won't actually
+exercise `publishWithRetry`'s retry loop, just the earlier `module.New` failure
+path.
+
+To genuinely exercise the retry loop itself, we'd need NATS reachable at startup
+but the publish call specifically failing partway through — harder to simulate
+with a simple `docker compose stop`. Given that, would you rather (a) accept
+this as a known testing limitation and move on, since the code path itself is
+straightforward enough to trust by inspection, or (b) take a bit more time to
+engineer a real publish-specific failure (e.g., temporarily pointing `NATS_URL`
+at a valid-but-wrong port so the connection succeeds but publishes fail, or
+another approach you have in mind)?
