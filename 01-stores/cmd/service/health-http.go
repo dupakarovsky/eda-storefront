@@ -8,7 +8,7 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-func healthHandler(mod *stores.Module) http.HandlerFunc {
+func healthHttpHandler(mod *stores.Module) http.HandlerFunc {
 
 	// new handler
 	h := func(w http.ResponseWriter, r *http.Request) {
@@ -34,6 +34,7 @@ func healthHandler(mod *stores.Module) http.HandlerFunc {
 		// write the status code
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "ok")
+
 	}
 
 	// create a http handler function

@@ -1721,3 +1721,83 @@ and tidy on its own.
 
 Re-run `go mod tidy` from `01-stores/` after adding that line and let me know
 what comes back.
+
+### **Step 3 — First real handler: `CreateStore`.**
+
+Good — `module.go` is exactly the file I needed, and that health handler
+confirms the mounting mechanics: `Router.Handle` takes a bare
+`http.HandlerFunc`, not the more general `http.Handler` interface. That matters
+because `storespbconnect.NewStoresServiceHandler` returns
+`(string, http.Handler)` — a path prefix plus a handler — not a `HandlerFunc`.
+The fix is simple: any `http.Handler`'s `ServeHTTP` method already has the exact
+signature `func(http.ResponseWriter, *http.Request)`, so passing
+`handler.ServeHTTP` (a method value, not a call) satisfies `Router.Handle`'s
+parameter type directly — no wrapping needed.
+
+Also worth calling out: `NewStoresServiceHandler` returns a single path prefix
+(something like `/stores.v1.StoresService/`) that internally dispatches to
+whichever of the eleven RPCs the request's full path names — one `router.Handle`
+call mounts the _entire_ service, not one per RPC.
+
+Two small updates to `module.go`:
+
+```go
+// 01-stores/module.go
+	"github.com/dupakarovsky/eda-storefront/stores/internal/application"
+	"github.com/dupakarovsky/eda-storefront/stores/internal/connectapi"
+	"github.com/dupakarovsky/eda-storefront/stores/internal/domain"
+```
+
+```go
+// 01-stores/module.go
+	CreateStoreUC *application.CreateStore
+
+	ConnectServer *connectapi.Server
+```
+
+```go
+// 01-stores/module.go
+	createStoreUC := application.NewCreateStore(storeRepo, publisher, logger)
+
+	connectServer := connectapi.NewServer(createStoreUC)
+```
+
+```go
+// 01-stores/module.go
+		CreateStoreUC: createStoreUC,
+		ConnectServer: connectServer,
+```
+
+And in `main.go`, add the import and one mounting line right after the existing
+`/health` registration:
+
+```go
+// 01-stores/cmd/service/main.go
+	"github.com/dupakarovsky/eda-storefront/stores/storespb/storespbconnect"
+```
+
+```go
+// 01-stores/cmd/service/main.go
+	router.Handle("GET /health", healthHandler(mod))
+
+	path, connectHandler := storespbconnect.NewStoresServiceHandler(mod.ConnectServer)
+	router.Handle(path, connectHandler.ServeHTTP)
+```
+
+One thing to double check once you've made these edits: `foundation`'s
+`Router.Handle` takes a `pattern string` as its first argument, and Go 1.22+'s
+`http.ServeMux` (which `Router` wraps) treats a pattern like `GET /health`
+differently from a bare path prefix like `/stores.v1.StoresService/` —
+specifically, `ServeMux` since 1.22 supports an explicit trailing-slash
+prefix-match semantic (`"/prefix/"` matches everything under it), which is
+exactly the shape `NewStoresServiceHandler` returns. That should just work, but
+if you see a routing/404 problem after wiring this up, that pattern-matching
+behavior is the first thing to check.
+
+Once you've built this (`go build ./...` from `01-stores/` is a fast way to
+confirm it compiles before running anything), let me know how it goes. After
+that, we'll cover how to actually call `CreateStore` for a real end-to-end check
+— worth previewing now: Connect handlers support a plain HTTP+JSON protocol out
+of the box alongside real gRPC, so verifying this doesn't require `grpcurl` or
+`buf curl` at all — a plain `curl` with a JSON body and one special header will
+work, which is a nice simplification from what you'd be used to with raw gRPC.

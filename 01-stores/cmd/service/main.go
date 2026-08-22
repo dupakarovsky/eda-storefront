@@ -11,6 +11,7 @@ import (
 	foundationlogging "github.com/dupakarovsky/eda-storefront/foundation/logging"
 	foundationshutdown "github.com/dupakarovsky/eda-storefront/foundation/shutdown"
 	"github.com/dupakarovsky/eda-storefront/stores"
+	"github.com/dupakarovsky/eda-storefront/stores/storespb/storespbconnect"
 )
 
 func main() {
@@ -57,9 +58,14 @@ func main() {
 		foundationhttp.TimeoutMiddleware(cfg.Server.RequestTimeout),
 	)
 
-	router.Handle("GET /health", healthHandler(mod))
+	// path and handler for the rpc server
+	path, connectHandler := storespbconnect.NewStoresServiceHandler(mod.ConnectServer)
 
-	// construct the handler for
+	// attach in the routes
+	router.Handle("GET /health", healthHttpHandler(mod))
+	router.Handle(path, connectHandler.ServeHTTP)
+
+	// build the server's multiplex handler
 	handler := router.Build()
 
 	srv := &http.Server{

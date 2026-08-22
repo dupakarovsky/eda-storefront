@@ -9,6 +9,7 @@ import (
 	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
 	foundationpostgres "github.com/dupakarovsky/eda-storefront/foundation/postgres"
 	"github.com/dupakarovsky/eda-storefront/stores/internal/application"
+	"github.com/dupakarovsky/eda-storefront/stores/internal/connectapi"
 	"github.com/dupakarovsky/eda-storefront/stores/internal/domain"
 	storesevents "github.com/dupakarovsky/eda-storefront/stores/internal/events"
 	"github.com/dupakarovsky/eda-storefront/stores/internal/postgres"
@@ -31,6 +32,7 @@ type Module struct {
 	ProductRepo domain.ProductRepository
 
 	CreateStoreUC *application.CreateStore
+	ConnectServer *connectapi.Server
 }
 
 // New will instantiate a new Module struct for this service
@@ -117,10 +119,11 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	productRepo := postgres.NewProductRepository(pool)
 
 	//============================================================================
-	// CREATE STORE SERVICE INITIALIZATION
+	// STORES USE CASE INITIALIZATION
 	//============================================================================
 
 	createStoreUC := application.NewCreateStore(storeRepo, publisher, logger)
+	connectServer := connectapi.NewServer(createStoreUC)
 
 	// construct a new Module instance
 	m := &Module{
@@ -132,6 +135,7 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		StoreRepo:     storeRepo,
 		ProductRepo:   productRepo,
 		CreateStoreUC: createStoreUC,
+		ConnectServer: connectServer,
 	}
 	return m, nil
 }
