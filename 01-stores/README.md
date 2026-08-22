@@ -1683,3 +1683,41 @@ If it's missing, add `./01-stores` to it.
 Let me know what `buf generate` produces (or paste the error if it doesn't run
 cleanly — plugin-not-found on `$PATH` is the most common first-run snag with
 `buf`).
+
+#### go.work with go mod tidy quirk
+
+That confirms it — and this is a genuinely under-documented Go quirk, not
+something you got wrong. `go.work`'s `use` directives are only honored by the
+"workspace-aware" commands (`go build`, `go run`, `go test`, `go vet`,
+`go list`, and a few others). `go mod tidy` is explicitly _not_ one of them — it
+deliberately operates in single-module mode, computing `01-stores/go.mod`'s
+dependency graph as if `go.work` didn't exist at all. That's why adding the bare
+`require` line wasn't enough: `tidy` still had no idea `foundation` lives on
+disk right next door, so it fell back to the module proxy/VCS lookup, same as it
+would for any real published module it can't reach in its local cache.
+
+The fix is a `replace` directive — this one _is_ respected by `go mod tidy`,
+since it's a property of `go.mod` itself rather than something `go.work` layers
+on top:
+
+```
+// 01-stores/go.mod
+replace github.com/dupakarovsky/eda-storefront/foundation => ../foundation
+```
+
+Add that line anywhere in `01-stores/go.mod` (outside the `require (...)` block,
+at the top level — convention is right after the `require` block, but placement
+doesn't matter to `go`). It tells `go mod tidy` directly: "whenever anything
+asks for this module, use the local directory `../foundation`, don't go looking
+anywhere else" — no version string involved at all, which is also why the
+placeholder `v0.0.0-00010101...` version you added is fine to leave in the
+`require` line; `replace` overrides it unconditionally.
+
+Worth noting for later: once this `replace` is in place, `go.work` actually
+becomes redundant for dependency resolution purposes — it still matters for
+things like running `go build ./...` across every module from the workspace root
+in one shot, but `01-stores/go.mod` alone is now enough for `01-stores` to build
+and tidy on its own.
+
+Re-run `go mod tidy` from `01-stores/` after adding that line and let me know
+what comes back.
