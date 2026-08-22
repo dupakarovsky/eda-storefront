@@ -1484,3 +1484,53 @@ honestly just be the `createstore-smoketest` command already built in Step 4,
 since it already does exactly that. Want to treat Step 6 as complete via that
 existing smoke test, or is there something more you'd want it to additionally
 cover before closing out Phase 3?
+
+## Phase 4 Plan
+
+Per `journey_progress.md`, Phase 4's scope is: define `storespb/api.proto`, run
+`buf` codegen, implement the ConnectRPC handlers (commands + queries), and mount
+them on `foundation`'s `Router`.
+
+Given the size of this, I'd like to break Phase 4 into these Steps:
+
+**Step 1 — Proto service definition.** Design `storespb/api.proto`: the
+`StoresService` with RPC methods for every command (mapping 1:1 to the domain
+methods we already have) and queries (`GetStore`, and a catalog/product-listing
+query — worth discussing exactly what shape this takes, since it's the first
+read path in the project). No code generation yet, just the contract.
+
+**Step 2 — `buf` tooling and codegen.** `buf.yaml` + `buf.gen.yaml`, run
+codegen, confirm the generated Go + Connect stubs compile and land where
+expected.
+
+**Step 3 — First real handler: `CreateStore`.** Wire the existing `CreateStore`
+use case into a Connect handler, mount it on the Router, verify with a real
+request (`buf curl` or similar) — this is the "runnable" milestone for the
+phase, proving the whole plumbing (proto → generated code → handler →
+application layer → Postgres/NATS) end to end before adding the rest.
+
+**Step 4 — Remaining Store command use cases + handlers** (`Rebrand`,
+`EnableParticipation`, `DisableParticipation`), following the `CreateStore`
+template.
+
+**Step 5 — Product command use cases + handlers** (`Add`, `Rebrand`,
+`IncreasePrice`, `DecreasePrice`, `Remove`).
+
+**Step 6 — Query path** (`GetStore`, catalog/product query) — the first
+genuinely new kind of code this project, since everything so far has been
+write-side.
+
+**Step 7 — Full wiring pass**: `module.go` composition root updated to build and
+mount every handler, then a full verification sweep (curl/`buf curl` against
+every method) before closing the phase.
+
+A couple of things worth flagging before we start:
+
+- Step 1 involves a real design decision — specifically, what the
+  catalog/product query looks like (get one product? list all products for a
+  store? both?) — since nothing in `journey_progress.md` commits to that shape
+  yet. We'll work that out together in Step 1 rather than me assuming it.
+- I'll keep every code snippet in the chat window per your guideline, and you'll
+  create the files and run things on your end, reporting back before we move on.
+
+---
