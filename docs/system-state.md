@@ -1,8 +1,8 @@
 # System State
 
-The single source of truth for "what's actually running right now." Updated
-at the start and end of every project — see `docs/roadmap.md` for the
-working agreement around this.
+The single source of truth for "what's actually running right now." Updated at
+the start and end of every project — see `docs/roadmap.md` for the working
+agreement around this.
 
 Last updated: 2026-08-14 (`foundation` project complete)
 
@@ -30,12 +30,11 @@ Last updated: 2026-08-14 (`foundation` project complete)
 
 ## How to update this file
 
-At the **start** of a project: confirm every service listed as a live
-dependency in `docs/roadmap.md`'s project table is actually marked "Live"
-here before beginning. If it isn't, stop and reconcile before writing any
-code.
+At the **start** of a project: confirm every service listed as a live dependency
+in `docs/roadmap.md`'s project table is actually marked "Live" here before
+beginning. If it isn't, stop and reconcile before writing any code.
 
-At the **end** of a project: flip the new service(s) from "Not started" (or
-"In progress") to "Live," fill in real published/consumed event names (the
-TBD placeholders above are guesses from the source book, not commitments),
-and update "Last Updated" for every row that changed.
+At the **end** of a project: flip the new service(s) from "Not started" (or "In
+progress") to "Live," fill in real published/consumed event names (the TBD
+placeholders above are guesses from the source book, not commitments), and
+update "Last Updated" for every row that changed.

@@ -37,7 +37,6 @@ include .postgres.env
 export
 
 .PHONY: migrate-up migrate-down
-
 migrate-up:
 	@migrate -path 01-stores/migrations \
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
@@ -55,7 +54,6 @@ migrate-down:
 ## ============================================================================
 
 .PHONY: stores-run
-
 stores-run:
 	@echo 'Running stores service...'
 	@mkdir -p ./01-stores/bin
@@ -64,9 +62,20 @@ stores-run:
 	cd ./01-stores && ./bin/stores
 
 ## ============================================================================
+## -- Database ---
+## ============================================================================
+
+# connect to the storesdb as the edb_dev user
+.PHONY: storesdb/dev
+storesdb/dev:
+	psql -h 127.0.0.1 -p 5433 -d storesdb -U eda_dev
+
+## ============================================================================
 ## --- Utils -- 
 ## ============================================================================
 
+# formats markdown file to keep it withint 80 characters long
 format:
 	mdformat --wrap=80 ./**/README.md
+
 

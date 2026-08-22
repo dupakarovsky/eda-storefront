@@ -1337,3 +1337,150 @@ straightforward enough to trust by inspection, or (b) take a bit more time to
 engineer a real publish-specific failure (e.g., temporarily pointing `NATS_URL`
 at a valid-but-wrong port so the connection succeeds but publishes fail, or
 another approach you have in mind)?
+
+### Testing stopping NATS conatiner
+
+Good instinct — this gives us a real, repeatable way to force a publish failure
+without guessing, and building it incrementally (stop first, restart later)
+means we can verify each piece works before combining them into the actual retry
+test.
+
+Here's the blank test file with just the stop helper:
+
+```go
+// 01-stores/internal/application/create_store_test.go
+```
+
+What's happening here: `cmd.Dir = "../../.."` is the part most worth
+double-checking against your actual layout before running. Go tests execute with
+the package's own directory as the working directory — this test file lives in
+`01-stores/internal/application/`, and `docker-compose.yaml` lives three levels
+up at the repo root (`application/` → `internal/` → `01-stores/` → root). If
+that path is wrong, `docker compose` will fail immediately with something like
+"no configuration file provided," which is actually a useful signal, not a real
+bug — it'll tell us right away if the relative path assumption is off rather
+than silently doing the wrong thing.
+
+`cmd.Stdout`/`cmd.Stderr` both point at the same `bytes.Buffer` rather than
+being wired to the OS's real stdout/stderr — this is deliberate for a test:
+`t.Fatalf`/`t.Logf` are the correct way to surface output inside Go's test
+framework (it's what shows up under `-v`, or only on failure otherwise), rather
+than letting a child process write directly to the terminal in a way `go test`
+doesn't capture or attribute to the right test.
+
+`t.Helper()` marks this function as a test helper so that if `t.Fatalf` fires,
+the reported line number points at the _caller_
+(`TestStopNATSContainer_Helper`'s call site) rather than at the line inside
+`stopNATSContainer` itself — minor, but it's the right convention for any
+function that exists purely to be called from within a test.
+
+One thing to flag before you run this: after this test passes, your NATS
+container will genuinely be stopped and will stay that way — there's no restart
+in this file yet, that's the next piece we'll add. So right after running it,
+you'll want to manually confirm it stopped (`docker compose ps` should show
+`nats` as `Exited` or absent), and then manually bring it back with
+`docker compose start nats` before doing anything else that needs a live NATS
+connection.
+
+Go ahead and run
+`go test ./01-stores/internal/application/... -run TestStopNATSContainer_Helper -v`
+and let me know what you get — including the captured output in the log line,
+since that's the real confirmation the `docker compose` invocation and working
+directory are both correct.
+
+Good call bumping `publishMaxAttempts` to 5 — gives us more room to land the
+restart inside the retry window instead of racing it.
+
+Let's refactor the stop helper into something reusable for both directions, then
+add a delayed-restart helper on top of it.
+
+```go
+// 01-stores/internal/application/create_store_test.go
+```
+
+What's happening here, and why it looks a bit different from
+`stopNATSContainer`:
+
+`restartNATSContainerAfter` launches its `docker compose start` call inside a
+`go func()`, not inline — the whole point is that the test needs to keep running
+(eventually calling `CreateStore.Execute`, once we wire this into the real retry
+test) while the container comes back on its own timeline in the background,
+rather than the test blocking on `time.Sleep(delay)` before doing anything else.
+
+That goroutine uses `t.Errorf`, not `t.Fatalf`, and this isn't a style choice —
+it's a real Go testing constraint. `t.Fatalf` calls `runtime.Goexit()`
+internally, which only terminates the calling goroutine; if that goroutine isn't
+the main test goroutine, `Goexit` just silently kills the background goroutine
+without ever failing the test or printing anything useful. `t.Errorf` is
+explicitly documented as safe to call from any goroutine — it just needs the
+test itself to still be running (hasn't returned yet) when the goroutine
+eventually calls it, which is exactly why `TestRestartNATSContainer_Helper` ends
+with a `time.Sleep(4 * time.Second)` — one second longer than the restart delay,
+giving the goroutine a guaranteed window to finish and report before the test
+function returns and Go's test runner considers `t` done.
+
+This sleep-past-the-goroutine pattern is a bit crude, and worth flagging as
+something we'd want to tighten once this becomes the real retry test — a
+`sync.WaitGroup` or a completion channel would let the test proceed the instant
+the goroutine's done rather than always waiting the full padded duration, but
+for validating the helper in isolation right now, a plain sleep is the simplest
+thing that lets us see it work.
+
+Before running: your NATS container should currently be stopped from the last
+test (per `make ps`'s output only showing `postgres`), so this test will attempt
+to `stop` an already-stopped container first — `docker compose stop` on a
+stopped container is a no-op that still exits 0, so that shouldn't fail, but
+worth confirming your `make ps` output going in so we know the starting state.
+
+Run
+`go test ./internal/application/create_store_test.go -run=TestRestartNATSContainer_Helper -v`
+and paste what you get — specifically both log lines (the stop, and the
+restart-after-delay one) and their timing relative to each other.
+
+#### Testing the NATS publishWithRetry
+
+Now the timing tells a coherent, physically sensible story. Every gap sits close
+to
+`attemptTimeout (1.5s, since the connection is fully closed and NATS returns immediately) + the backoff sleep before the *next* attempt`
+— the first gap (~1.7s) matches 1.5s + 200ms, the second (~1.9s) matches roughly
+1.5s + 400ms, and so on, climbing predictably rather than erratically. Total
+elapsed time was 10.36 seconds — right in line with the ~10.5-second ceiling we
+calculated (5 attempts × up to 1.5s, plus 200+400+800+1600ms of backoff), not
+the unbounded, ambiguous multi-second block we saw before the fix. The store was
+saved, the retry loop genuinely exhausted all 5 attempts on real, immediate
+`"connection closed"` errors, and `Execute` correctly returned an error
+alongside the saved store — exactly the failure-mode behavior ADL 0007
+describes.
+
+This confirms two things worth calling out explicitly: first, the earlier
+successful 2-second-outage test really was proving our retry-with-backoff logic
+(not NATS client buffering papering over it) — we now have a _contrasting_ run
+showing what happens when the outage genuinely outlasts the retry budget, which
+is exactly the counterfactual needed to trust the first result. Second, the
+real, now-measured retry budget is ~10.5 seconds, not the original ~3-second
+estimate — worth updating in the ADL before it's written down as final.
+
+One update to ADL 0007's "Decision" section, replacing the vague "three
+attempts, 200ms/400ms delays" (already stale since you bumped
+`publishMaxAttempts` to 5 mid-session) with the real, tested number:
+
+```markdown
+## Decision
+```
+
+Also worth appending to Context, a line making clear this wasn't just theorized
+but reproduced twice with different outage lengths — a 2-second outage inside
+the retry budget (succeeds, single real retry observed) and a 15-second outage
+exceeding it (exhausts all 5 attempts, fails cleanly with the aggregate still
+saved) — both verified against a real, forcibly-stopped-and-restarted NATS
+container, not simulated.
+
+With this confirmed, Step 5 is done: the retry-with-backoff design is
+implemented, its real timing behavior is measured and understood (not assumed),
+and both the success and failure paths have been proven against a genuinely
+interrupted NATS connection. That leaves Step 6 — the "real" smoke test
+exercising the full service boot path end-to-end, which at this point might
+honestly just be the `createstore-smoketest` command already built in Step 4,
+since it already does exactly that. Want to treat Step 6 as complete via that
+existing smoke test, or is there something more you'd want it to additionally
+cover before closing out Phase 3?

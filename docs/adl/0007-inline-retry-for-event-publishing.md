@@ -33,19 +33,25 @@ currently hypothetical rather than actively harmful.
 
 ## Decision
 
-Adopt inline retry with backoff (three attempts, 200ms/400ms delays) as
-the interim handling for publish failures. On exhausted retries, log at
-`Error` level with the aggregate ID, event name, and subject, and return
-the error to the caller alongside the (non-nil) saved aggregate, so a
-caller can distinguish "nothing happened" from "saved but not published."
+Adopt inline retry with backoff (five attempts, each individually bounded
+to 1.5s via a per-attempt derived context, with 200ms/400ms/800ms/1600ms
+delays between attempts) as the interim handling for publish failures —
+giving a real, tested worst-case budget of roughly 10.5 seconds before
+giving up. On exhausted retries, log at `Error` level with the aggregate
+ID, event name, and subject, and return the error to the caller alongside
+the (non-nil) saved aggregate, so a caller can distinguish "nothing
+happened" from "saved but not published."
 
-The transactional outbox pattern is explicitly deferred, not rejected — it
-remains the correct answer for a system whose stated purpose (per ADL
-0001/0002) is genuine, durable event-driven integration between services.
-It is deferred specifically because implementing it properly (an outbox
-table, a migration, a poller/worker process, a polling-vs-`LISTEN`/`NOTIFY`
-decision) is scope disproportionate to Phase 3's remaining goals, and is
-better tackled as its own deliberate unit of work.
+This budget was arrived at empirically, not by estimate alone: an initial
+version without per-attempt timeouts was found, via a real forced-outage
+test, to block for an unbounded and unpredictable duration on any attempt
+made while the NATS client itself was in an ambiguous reconnect-in-progress
+state — one observed run blocked ~4.7 seconds on a single attempt before
+returning an error, several times longer than the deliberate backoff sleeps
+between attempts. Adding a 1.5-second timeout per attempt (via
+`context.WithTimeout` derived from the caller's context) closed that gap,
+making the total retry duration a real, boundable number rather than an
+estimate that could be off by several times in practice.
 
 ## Alternatives considered
 

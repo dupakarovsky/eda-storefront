@@ -335,99 +335,92 @@ first time the project's NATS testing moves off the predating standalone
 
 ### What Was Built
 
-Added `docker-compose.yml` (Postgres 17 and NATS 2.12 with JetStream, each on
-a named volume — `pg-data`, `nats-data` — attached to a dedicated `eda-net`
-bridge network, ports bound to `127.0.0.1` only) and a first `Makefile`
-(`up`, `down`, `logs`, `ps`, `smoke`). Extended `foundation/config` with a new
-`NATSConfig` struct (`NATS_URL`, `NATS_NAME`, `NATS_CONNECT_TIMEOUT`,
-`NATS_MAX_RECONNECTS`, `NATS_RECONNECT_WAIT`), the first config the NATS
-package previously lacked — `tmp-smoketest` had been constructing
-`foundationnats.Config` by hand rather than through `config.Load()`. Made
-`EnsureStream`'s storage explicit (`Storage: jetstream.FileStorage`) rather
-than relying on JetStream's implicit default, so durability is a visible
-declaration tied to the now-volume-backed `store_dir`, not an unstated
-default.
+Added `docker-compose.yml` (Postgres 17 and NATS 2.12 with JetStream, each on a
+named volume — `pg-data`, `nats-data` — attached to a dedicated `eda-net` bridge
+network, ports bound to `127.0.0.1` only) and a first `Makefile` (`up`, `down`,
+`logs`, `ps`, `smoke`). Extended `foundation/config` with a new `NATSConfig`
+struct (`NATS_URL`, `NATS_NAME`, `NATS_CONNECT_TIMEOUT`, `NATS_MAX_RECONNECTS`,
+`NATS_RECONNECT_WAIT`), the first config the NATS package previously lacked —
+`tmp-smoketest` had been constructing `foundationnats.Config` by hand rather
+than through `config.Load()`. Made `EnsureStream`'s storage explicit
+(`Storage: jetstream.FileStorage`) rather than relying on JetStream's implicit
+default, so durability is a visible declaration tied to the now-volume-backed
+`store_dir`, not an unstated default.
 
-Built `foundation-smoketest`, a new permanent workspace member (replacing
-the ad hoc `tmp-smoketest` used in Phases 1–5, now removed from `go.work`)
-that wires all six `foundation` packages together in one running service for
-the first time: `config.Load()` populates every sub-config; `logging.New`
-sets up the logger; `postgres.NewPool` and `foundationnats.Connect` are
-constructed and their resources cleanly `defer`-closed in reverse order;
-`EnsureStream` provisions a `SMOKETEST` stream; a `Router` wired with all
-three middleware serves `/ping` (pings Postgres, publishes to JetStream, and
-returns the real ack) alongside `/ok`, `/panic`, and `/slow` carried over
-from Phase 4's verification; `shutdown.Run` drives the whole server's
-lifecycle. Verified via a real compiled binary rather than `go run` (see
-Issues below) — full request cycle through all three middleware, panic
-recovery, timeout enforcement, and clean graceful shutdown, all confirmed
-against real containers.
+Built `foundation-smoketest`, a new permanent workspace member (replacing the ad
+hoc `tmp-smoketest` used in Phases 1–5, now removed from `go.work`) that wires
+all six `foundation` packages together in one running service for the first
+time: `config.Load()` populates every sub-config; `logging.New` sets up the
+logger; `postgres.NewPool` and `foundationnats.Connect` are constructed and
+their resources cleanly `defer`-closed in reverse order; `EnsureStream`
+provisions a `SMOKETEST` stream; a `Router` wired with all three middleware
+serves `/ping` (pings Postgres, publishes to JetStream, and returns the real
+ack) alongside `/ok`, `/panic`, and `/slow` carried over from Phase 4's
+verification; `shutdown.Run` drives the whole server's lifecycle. Verified via a
+real compiled binary rather than `go run` (see Issues below) — full request
+cycle through all three middleware, panic recovery, timeout enforcement, and
+clean graceful shutdown, all confirmed against real containers.
 
-Closed the durability question deferred since Step 1: with the stack up,
-`/ping` was called (`nats_seq: 2`, continuing from an earlier manual run),
-the containers were torn down via `make down` (volumes intentionally
-untouched), volumes confirmed present via `docker volume ls`, containers
-brought back up via `make up`, Postgres logged `Skipping initialization`
-confirming it recognized existing data in `pg-data`, and a fresh
-`foundation-smoketest` run's `/ping` returned `nats_seq: 3` — continuing the
-sequence rather than resetting to 1, proving the same JetStream stream (not
-a freshly recreated one) survived the restart. Independently cross-checked
-against NATS's own `/jsz?streams=true` monitoring endpoint, whose
-`SMOKETEST` stream `created` timestamp predated the restart and whose
-message count (3) matched.
+Closed the durability question deferred since Step 1: with the stack up, `/ping`
+was called (`nats_seq: 2`, continuing from an earlier manual run), the
+containers were torn down via `make down` (volumes intentionally untouched),
+volumes confirmed present via `docker volume ls`, containers brought back up via
+`make up`, Postgres logged `Skipping initialization` confirming it recognized
+existing data in `pg-data`, and a fresh `foundation-smoketest` run's `/ping`
+returned `nats_seq: 3` — continuing the sequence rather than resetting to 1,
+proving the same JetStream stream (not a freshly recreated one) survived the
+restart. Independently cross-checked against NATS's own `/jsz?streams=true`
+monitoring endpoint, whose `SMOKETEST` stream `created` timestamp predated the
+restart and whose message count (3) matched.
 
 ### Issues Found & Resolved
 
-Several real issues surfaced during Postgres hardening and compose setup —
-full technical detail and the resulting security posture belongs in the
-system-wide ADL (see roadmap "Carried Into Project Close" below), not
-duplicated here, but cataloging what was _found_, since that's specific to
-this project's build process: `initdb` enables `trust` authentication for
-local Unix-socket connections by default regardless of
-`POSTGRES_HOST_AUTH_METHOD` (that variable only affects the `host` line the
-entrypoint script appends afterward, not the `local` line `initdb` writes
-independently) — assessed as low-severity here since nothing shares the
-container's local socket, but flagged for the ADL rather than patched
-ad hoc. Separately, confirmed via `pg_hba.conf` inspection that Docker's
-port-forwarding does not preserve `127.0.0.1` as a literal source address
-once a connection crosses into the container's network namespace — the
-auto-generated `host all all 127.0.0.1/32 trust` line is consequently dead
-in this topology, with all real host-to-container traffic instead falling
-through to the catch-all `scram-sha-256` line.
+Several real issues surfaced during Postgres hardening and compose setup — full
+technical detail and the resulting security posture belongs in the system-wide
+ADL (see roadmap "Carried Into Project Close" below), not duplicated here, but
+cataloging what was _found_, since that's specific to this project's build
+process: `initdb` enables `trust` authentication for local Unix-socket
+connections by default regardless of `POSTGRES_HOST_AUTH_METHOD` (that variable
+only affects the `host` line the entrypoint script appends afterward, not the
+`local` line `initdb` writes independently) — assessed as low-severity here
+since nothing shares the container's local socket, but flagged for the ADL
+rather than patched ad hoc. Separately, confirmed via `pg_hba.conf` inspection
+that Docker's port-forwarding does not preserve `127.0.0.1` as a literal source
+address once a connection crosses into the container's network namespace — the
+auto-generated `host all all 127.0.0.1/32 trust` line is consequently dead in
+this topology, with all real host-to-container traffic instead falling through
+to the catch-all `scram-sha-256` line.
 
-One tooling issue, unrelated to Postgres/NATS themselves: the first
-`make smoke` run produced a non-zero exit (`make: *** Error 1`) after an
-otherwise-clean Ctrl+C shutdown, with every log line showing success and no
-error path in `main.go` ever firing. Root cause: `go run` execs the compiled
-binary as a child process but installs no SIGINT handler of its own: Ctrl+C
-delivers SIGINT to the whole foreground process group simultaneously, so
-`go run` itself dies immediately from the signal rather than relaying its
-child's real exit code, regardless of how cleanly the child shut down.
-Resolved by changing the `smoke` Makefile target to `go build` then execute
-the resulting binary directly, which also incidentally makes local testing
-match how a containerized service will actually receive SIGTERM later (no
-wrapper process in between).
+One tooling issue, unrelated to Postgres/NATS themselves: the first `make smoke`
+run produced a non-zero exit (`make: *** Error 1`) after an otherwise-clean
+Ctrl+C shutdown, with every log line showing success and no error path in
+`main.go` ever firing. Root cause: `go run` execs the compiled binary as a child
+process but installs no SIGINT handler of its own: Ctrl+C delivers SIGINT to the
+whole foreground process group simultaneously, so `go run` itself dies
+immediately from the signal rather than relaying its child's real exit code,
+regardless of how cleanly the child shut down. Resolved by changing the `smoke`
+Makefile target to `go build` then execute the resulting binary directly, which
+also incidentally makes local testing match how a containerized service will
+actually receive SIGTERM later (no wrapper process in between).
 
 ### State at End of Phase 6
 
-Every `foundation` package (`logging`, `postgres`, `config`, `shutdown`,
-`http`, `nats`) is complete and now proven together, not just individually,
-via `foundation-smoketest`. `docker-compose.yml` and `Makefile` exist as
-real, working, incrementally-extensible deliverables. Both stateful
-services' persistence has been verified to survive a genuine container
-restart, not just assumed from a volume being declared. This closes the
-`foundation` project.
+Every `foundation` package (`logging`, `postgres`, `config`, `shutdown`, `http`,
+`nats`) is complete and now proven together, not just individually, via
+`foundation-smoketest`. `docker-compose.yml` and `Makefile` exist as real,
+working, incrementally-extensible deliverables. Both stateful services'
+persistence has been verified to survive a genuine container restart, not just
+assumed from a volume being declared. This closes the `foundation` project.
 
 ### Carried Into Project Close
 
-Three items are owed before this project is considered fully closed, per
-the working agreement in `docs/roadmap.md` and the discussion at the start
-of this phase: (1) an ADL evaluating whether this project's decision to
-scope work exclusively to `foundation` — pushing `stores` entirely to
-Project 1 — warrants a formal record; (2) a decision, recorded or explicitly
-re-deferred, on the multi-listener shutdown question raised in Phase 3;
-(3) a decision on the Postgres hardening posture touched on in this phase —
-local-socket `trust` authentication, the dead `127.0.0.1` HBA rule, and
-whether to adopt the fuller bind-mounted `pg_hba.conf` pattern discussed
-during Step 1 — plus an update to `docs/system-state.md` marking
-`foundation` live.
+Three items are owed before this project is considered fully closed, per the
+working agreement in `docs/roadmap.md` and the discussion at the start of this
+phase: (1) an ADL evaluating whether this project's decision to scope work
+exclusively to `foundation` — pushing `stores` entirely to Project 1 — warrants
+a formal record; (2) a decision, recorded or explicitly re-deferred, on the
+multi-listener shutdown question raised in Phase 3; (3) a decision on the
+Postgres hardening posture touched on in this phase — local-socket `trust`
+authentication, the dead `127.0.0.1` HBA rule, and whether to adopt the fuller
+bind-mounted `pg_hba.conf` pattern discussed during Step 1 — plus an update to
+`docs/system-state.md` marking `foundation` live.

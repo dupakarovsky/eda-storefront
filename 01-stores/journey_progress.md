@@ -20,7 +20,7 @@ mount onto it with no second port or proxy hop.
 This is the first project since `foundation` was split out (ADL 0005) to build
 on top of it rather than build it.
 
-______________________________________________________________________
+---
 
 ## Concepts We'll Cover
 
@@ -45,7 +45,7 @@ methods)
 shared `docker-compose.yml`/`Makefile`, and producing this project's
 `CONTRACT.md` as a real deliverable (ADL 0004)
 
-______________________________________________________________________
+---
 
 ## Folder Structure
 
@@ -78,7 +78,7 @@ ______________________________________________________________________
     └── 0001_init.sql
 ```
 
-______________________________________________________________________
+---
 
 ## Phase Plan
 
@@ -112,9 +112,9 @@ live containers.
 shapes (superseding the `system-state.md` placeholders), update
 `system-state.md`, and write the closing Phase summary.
 
-______________________________________________________________________
+---
 
-## Phase 1 — Domain Model ✅
+## Phase 1 — Domain Model (COMPLETED)
 
 **What was built:** `Store` and `Product` aggregates in `internal/domain/`, as
 current-state structs (ADL 0002) with behavior methods returning
@@ -183,9 +183,9 @@ repositories with `Reconstitute` rehydration and current-state upserts.
 Concurrency control strategy (row lock vs optimistic version column) still to be
 decided per aggregate based on write pattern.
 
-______________________________________________________________________
+---
 
-## Phase 2 — Postgres Persistence ✅
+## Phase 2 — Postgres Persistence (COMPLETED)
 
 **What was built:** Role-based database access, a per-service database, schema
 migrations, repository interfaces, and Postgres adapters for both aggregates —
@@ -302,3 +302,89 @@ Postgres adapters as-is, ready to be called from real event-publishing code.
 `foundation/nats`'s `Publisher`/`EnsureStream`/`Subject` helpers (already proven
 in `foundation-smoketest`) still unused by `01-stores` — Phase 3 is where a
 store/product action actually reaches NATS for the first time in this service.
+
+## Phase 3 — Event Publishing (COMPLETED)
+
+**What was built:**
+
+- `internal/events/stream.go` — the `stores` stream definition, registered via
+  `EnsureStream` in `module.go`'s boot sequence, using
+  `stores.store.*`/`stores.product.*` as its two subjects (Option A from the
+  earlier subject-scheme discussion).
+- `domain/events.go` — corrected event-name constants (a typo, an inconsistent
+  suffix, and a redundant prefix, all fixed before they became a live wire
+  contract).
+- `internal/events/envelope.go` and `payloads.go` — the `Envelope` wire format
+  (`aggregate_id`, `event_name`, `occurred_at`, `data`) plus one dedicated,
+  JSON-tagged payload type per domain event, converted via an exhaustive
+  `toPayload` switch with an error-returning default case, so no future event
+  type can silently reach the wire unmapped.
+- `internal/events/subject.go` — `SubjectFor`, resolving a domain event to its
+  NATS subject via the same exhaustive-switch discipline.
+- `internal/application/create_store.go` — the first real use case,
+  `CreateStore.Execute`: construct → save → envelope → publish, wired into
+  `module.go` as `mod.CreateStoreUC`.
+- `internal/application/publish_retry.go` — `publishWithRetry`, five attempts
+  with exponential backoff (200/400/800/1600ms) and a per-attempt 1.5s timeout,
+  giving a measured ~10.5-second worst-case budget.
+- `cmd/createstore-smoketest/main.go` — the real, full-boot-path smoke test
+  proving the happy path against live Postgres and NATS.
+- `internal/application/create_store_test.go` — Docker-orchestrating test
+  helpers (`stopNATSContainer`, `restartNATSContainerAfter`, `loadRealEnv`) plus
+  `TestCreateStore_Execute_SucceedsAfterNATSRestart`, run twice against
+  genuinely different outage lengths to prove both the success and
+  exhausted-retry paths for real.
+- `docs/adl/0007-inline-retry-transactional-outbox-deferred.md` — recording the
+  retry-vs-outbox decision, including the empirically-measured retry budget.
+
+**Key concepts exercised:**
+
+- Marshaling boundaries: why embedding an interface's underlying struct directly
+  leaks unexported-field gaps and Go-native casing, and why a dedicated
+  wire-contract type (not the domain type) is the right fix — tying back to ADL
+  0004's contract-boundary philosophy a layer deeper than originally scoped.
+- Exhaustive type switches with an error-returning default as a structural
+  guardrail against silent omission, applied twice (`toPayload`, `aggregateFor`)
+  rather than once.
+- The real distinction between "the NATS client's own reconnect buffering" and
+  "our own retry logic" — and why proving the latter requires deliberately
+  outlasting the former, not just watching a single test pass.
+- `context.WithTimeout` as a way to bound worst-case latency per attempt, and
+  why skipping it let an ambiguous connection state block for several times
+  longer than the deliberate backoff alone would suggest.
+- Why `t.Errorf`, not `t.Fatalf`, is required from a background goroutine in a
+  Go test — and the coordination cost (a padded sleep, in this case) of not yet
+  having sunk to a `sync.WaitGroup` or completion channel.
+
+**Deviations from the original plan, and why:**
+
+- Step 1 grew substantially beyond "define the stream" — the composition root
+  (`module.go`, `cmd/service/main.go`, `health.go`) didn't exist yet, so it was
+  built here rather than assumed, effectively absorbing part of what the
+  original roadmap implied Phase 4 would do.
+- Failure-mode handling (Step 5) landed on inline retry-with-backoff rather than
+  a transactional outbox, deliberately deferred per ADL 0007 — the
+  correct-but-heavier answer, left as a concrete open item to revisit once
+  `depot`/`baskets` exist and the gap becomes real rather than hypothetical.
+- Verification leaned on real `docker compose stop`/`start` orchestration from
+  within Go tests, rather than mocking NATS — slower and more elaborate than a
+  unit test, but it's what caught the context-timeout gap a mock never would
+  have surfaced.
+
+**State at end of Phase 3:** `01-stores` publishes real `StoreCreated` events to
+a live `stores` JetStream stream on store creation, with a tested, bounded retry
+path for transient NATS outages and an honest, documented gap for outages that
+outlast it. `CreateProduct` and the remaining seven event-publishing paths are
+not yet wired into an application-layer use case — only `CreateStore` was built,
+as the proof-of-pattern this phase needed.
+
+**Carried into Phase 4:** The `application` package pattern (`CreateStore` as
+the template), `publishWithRetry` as reusable infrastructure for any future use
+case, and the full `events` package (envelope, payloads, subject resolution)
+ready to be called from the remaining seven command handlers Phase 4's
+ConnectRPC layer will need — plus the standing to-do, per ADL 0007, of
+documenting the exact wire payload shapes (including the
+`ProductPriceDecreased.delta` negative-sign convention) into `CONTRACT.md` once
+the API layer's scope is fully known.
+
+I'll append this to `journey_progress.md` now, alongside the finalized ADL 0007.
