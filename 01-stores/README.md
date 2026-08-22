@@ -1586,3 +1586,100 @@ Nothing to run yet — this is just the contract. Take a look and let me know if
 anything about the shape feels off (naming, missing fields, a command you'd want
 represented differently), or if you're ready to move to Step 2 and get `buf`
 actually generating code from this.
+
+### **Step 2 — `buf` tooling and codegen.**
+
+Before the config files — the conceptual shift from raw `protoc`: instead of
+invoking `protoc` with a pile of `--go_out`/`--go-grpc_out` flags and plugin
+paths on the command line, `buf` reads two small YAML files that describe (1)
+where your `.proto` files live and how they're linted/versioned (`buf.yaml`),
+and (2) which codegen plugins to run against them and where to put the output
+(`buf.gen.yaml`). `buf generate` then does the equivalent of the whole `protoc`
+invocation in one command. Plugins can be either "remote" (buf.build hosts and
+runs them for you, no local install) or "local" (a `protoc-gen-*` binary on your
+`$PATH`, same as classic `protoc` plugin discovery) — we'll use local ones so
+nothing depends on network access at generate-time.
+
+First, two one-time installs (skip any you already have):
+
+```
+go install github.com/bufbuild/buf/cmd/buf@latest
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest
+```
+
+Make sure the directory `go install` puts these in (`go env GOBIN`, or
+`$(go env GOPATH)/bin` if `GOBIN` is unset) is on your `$PATH` — `buf` finds
+local plugins the same way your shell finds any other binary.
+
+Move `api.proto` from Step 1 into `01-stores/storespb/api.proto`, then add these
+two files in `01-stores/`:
+
+```yaml
+# 01-stores/buf.yaml
+version: v2
+modules:
+    - path: storespb
+lint:
+    use:
+        - STANDARD
+breaking:
+    use:
+        - FILE
+```
+
+```yaml
+# 01-stores/buf.gen.yaml
+version: v2
+plugins:
+    - local: protoc-gen-go
+      out: storespb
+      opt: paths=source_relative
+    - local: protoc-gen-connect-go
+      out: storespb
+      opt: paths=source_relative
+```
+
+What's happening here: `buf.yaml`'s `modules` entry tells buf that `storespb/`
+is a self-contained proto module — this is the buf-native replacement for
+pointing `protoc` at an include path by hand. `lint`/`breaking` turn on buf's
+built-in linter (style rules for proto files) and breaking-change detector
+(compares against a previous version of the schema) — we're not using either
+seriously yet, but `STANDARD`/`FILE` are the sane defaults, and having them on
+from day one means any accidental breaking change to `api.proto` later gets
+flagged instead of silently shipped. `buf.gen.yaml`'s `paths=source_relative`
+option is the one flag worth calling out: it tells `protoc-gen-go` to put each
+generated `.go` file next to its source `.proto` file (so `storespb/api.proto`
+produces `storespb/api.pb.go`), rather than nesting output under a directory
+tree derived from the `go_package` option — the same option you'd have passed
+via `--go_out=paths=source_relative:...` with raw `protoc`.
+
+From `01-stores/`, run:
+
+```
+buf generate
+```
+
+You should see it complete silently (or list the files it wrote), and afterward
+`storespb/` should contain `api.proto`, `api.pb.go`, and `api.connect.go`. Two
+follow-up commands, still from `01-stores/`:
+
+```
+go get google.golang.org/protobuf
+go get connectrpc.com/connect
+go mod tidy
+```
+
+These pull in the two runtime libraries the generated code actually imports (as
+opposed to the two codegen _tools_ you installed above, which only run at
+generate-time and aren't a runtime dependency).
+
+One thing to double check on your end before running any of this: confirm
+`01-stores` is listed in the workspace `go.work`'s `use()` block — the copy of
+`go.work` in the project docs only shows `foundation` and
+`foundation-smoketest`, which looks like it predates `01-stores` being created.
+If it's missing, add `./01-stores` to it.
+
+Let me know what `buf generate` produces (or paste the error if it doesn't run
+cleanly — plugin-not-found on `$PATH` is the most common first-run snag with
+`buf`).
