@@ -1534,3 +1534,55 @@ A couple of things worth flagging before we start:
   create the files and run things on your end, reporting back before we move on.
 
 ---
+
+### **Step 1 — Proto service definition.**
+
+Both good defaults — server-side ID generation is the more typical REST/RPC
+pattern anyway (lets the server own its own key format), and keeping queries
+separate keeps `ListProducts` free to evolve independently (pagination, filters)
+without dragging `GetStore`'s shape along with it.
+
+Here's the proto service surface. One buf/proto-specific note before you look at
+it: buf convention is versioned packages (`stores.v1`) and a `go_package` option
+pointing at where the generated code should import from — this replaces the raw
+`--go_out`/`--go-grpc_out` flags you'd have passed to `protoc` by hand.
+
+```protobuf
+
+```
+
+What's happening here, and the choices worth flagging:
+
+Every command RPC has its own dedicated request/response pair, even though
+several share nearly identical shapes
+(`EnableStoreParticipationRequest`/`DisableStoreParticipationRequest` are both
+just a `store_id`). This is deliberate, not boilerplate laziness — it's the same
+principle Phase 1 applied to domain events (one concrete type per event rather
+than one generic type with a variant field). A dedicated message per RPC means
+adding a field to one command later can never accidentally ripple into an
+unrelated one that happens to share a message type today.
+
+`IncreaseProductPriceRequest`/`DecreaseProductPriceRequest` both carry `price`
+as the absolute target value, not a delta — this mirrors
+`Product.IncreasePrice(price float64)`/`DecreasePrice(price float64)` in the
+domain layer exactly (Phase 1's `journey_progress.md` notes the domain computes
+its own delta internally for the event; the API caller never has to know or
+supply that delta).
+
+`RemoveProductResponse` is an empty message rather than reaching for
+`google.protobuf.Empty`. That well-known type would work fine, but it pulls in
+an extra proto import and a bit of buf module configuration (dependency
+management for well-known types) that's a genuine buf-specific wrinkle — not
+worth introducing on your very first proto file when a trivially empty message
+does the same job. We can revisit that later if it bugs you.
+
+Notice there's no `DeleteStore`, no batch/bulk create, and no generic "search"
+endpoint — that's intentional and matches this system's stated non-goals (see
+the `CONTRACT.md` template's "explicit non-goals" section): most cross-service
+interaction happens over events, and this synchronous surface stays deliberately
+narrow.
+
+Nothing to run yet — this is just the contract. Take a look and let me know if
+anything about the shape feels off (naming, missing fields, a command you'd want
+represented differently), or if you're ready to move to Step 2 and get `buf`
+actually generating code from this.
