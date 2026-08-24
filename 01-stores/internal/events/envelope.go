@@ -19,7 +19,7 @@ type Envelope struct {
 
 func NewEnvelope(event domain.Event) (Envelope, error) {
 
-	// first, conver the Event concrete type into a proper Payload type
+	// first, convert the Event concrete type into a proper Payload type
 	payload, err := toPayload(event)
 	if err != nil {
 		return Envelope{}, err

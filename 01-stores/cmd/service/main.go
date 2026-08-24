@@ -47,7 +47,7 @@ func main() {
 	defer mod.Close()
 
 	//============================================================================
-	// MODULE INITIALIZATION
+	// ROUTER INITIALIZATION
 	//============================================================================
 	router := foundationhttp.NewRouter()
 

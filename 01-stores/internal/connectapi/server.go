@@ -13,13 +13,15 @@ import (
 // The Server struct needs to implement all methods from the StoresServiceHandler
 // interface api.connect in order to make grcp requests
 type Server struct {
-	createStoreUC *application.CreateStore
+	createStoreUC  *application.CreateStore
+	rebrandStoreUC *application.RebrandStore
 }
 
 // NewServer instantiates a new server
-func NewServer(createStoreUC *application.CreateStore) *Server {
+func NewServer(createStoreUC *application.CreateStore, rebrandStore *application.RebrandStore) *Server {
 	return &Server{
-		createStoreUC: createStoreUC,
+		createStoreUC:  createStoreUC,
+		rebrandStoreUC: rebrandStore,
 	}
 }
 
@@ -29,7 +31,8 @@ func (s *Server) CreateStore(ctx context.Context, req *connect.Request[storespb.
 	// create a id for the store
 	id := uuid.NewString()
 
-	// run the Execute function to create a Store. It'll connect to the gRPC server
+	// run the Execute function to create a Store. It'll connect to the gRPC server before
+	// executing the command
 	store, err := s.createStoreUC.Execute(ctx, id, req.Msg.Name,
 		req.Msg.Location)
 	if err != nil {
@@ -50,8 +53,23 @@ func (s *Server) CreateStore(ctx context.Context, req *connect.Request[storespb.
 // Implement the stubs statisfy the StoresServiceHandler Interface
 //----------------------------------------------------------------
 
+// Rebrand will take a rpc message Request, connect to the grpc server and emit a RebrandStoreResponse message
 func (s *Server) RebrandStore(ctx context.Context, req *connect.Request[storespb.RebrandStoreRequest]) (*connect.Response[storespb.RebrandStoreResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+
+	// execute the store rebranding
+	store, err := s.rebrandStoreUC.Execute(ctx, req.Msg.StoreId, req.Msg.Name)
+	if err != nil {
+		// failed to connect to the server
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// emite a response to the caller
+	response := connect.NewResponse(&storespb.RebrandStoreResponse{
+		// use a convertion function to convert a domain type to a storepb type
+		Store: toProtoStore(store),
+	})
+
+	return response, nil
 }
 
 func (s *Server) EnableStoreParticipation(ctx context.Context, req *connect.Request[storespb.EnableStoreParticipationRequest]) (*connect.Response[storespb.EnableStoreParticipationResponse], error) {

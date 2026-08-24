@@ -1743,45 +1743,43 @@ Two small updates to `module.go`:
 
 ```go
 // 01-stores/module.go
-	"github.com/dupakarovsky/eda-storefront/stores/internal/application"
-	"github.com/dupakarovsky/eda-storefront/stores/internal/connectapi"
-	"github.com/dupakarovsky/eda-storefront/stores/internal/domain"
+```
+
+"github.com/dupakarovsky/eda-storefront/stores/internal/application"
+"github.com/dupakarovsky/eda-storefront/stores/internal/connectapi"
+"github.com/dupakarovsky/eda-storefront/stores/internal/domain"
+
+```go
+// 01-stores/module.go
+    CreateStoreUC *application.CreateStore
+    ConnectServer *connectapi.Server
 ```
 
 ```go
 // 01-stores/module.go
-	CreateStoreUC *application.CreateStore
-
-	ConnectServer *connectapi.Server
+    createStoreUC := application.NewCreateStore(storeRepo, publisher, logger)
+    connectServer := connectapi.NewServer(createStoreUC)
 ```
 
 ```go
 // 01-stores/module.go
-	createStoreUC := application.NewCreateStore(storeRepo, publisher, logger)
-
-	connectServer := connectapi.NewServer(createStoreUC)
-```
-
-```go
-// 01-stores/module.go
-		CreateStoreUC: createStoreUC,
-		ConnectServer: connectServer,
+    CreateStoreUC: createStoreUC,
+    ConnectServer: connectServer,
 ```
 
 And in `main.go`, add the import and one mounting line right after the existing
 `/health` registration:
 
 ```go
-// 01-stores/cmd/service/main.go
-	"github.com/dupakarovsky/eda-storefront/stores/storespb/storespbconnect"
+    // 01-stores/cmd/service/main.go
+    "github.com/dupakarovsky/eda-storefront/stores/storespb/storespbconnect"
 ```
 
 ```go
 // 01-stores/cmd/service/main.go
-	router.Handle("GET /health", healthHandler(mod))
-
-	path, connectHandler := storespbconnect.NewStoresServiceHandler(mod.ConnectServer)
-	router.Handle(path, connectHandler.ServeHTTP)
+    router.Handle("GET /health", healthHandler(mod))
+    path, connectHandler := storespbconnect.NewStoresServiceHandler(mod.ConnectServer)
+    router.Handle(path, connectHandler.ServeHTTP)
 ```
 
 One thing to double check once you've made these edits: `foundation`'s
@@ -1801,3 +1799,88 @@ that, we'll cover how to actually call `CreateStore` for a real end-to-end check
 of the box alongside real gRPC, so verifying this doesn't require `grpcurl` or
 `buf curl` at all — a plain `curl` with a JSON body and one special header will
 work, which is a nice simplification from what you'd be used to with raw gRPC.
+
+#### Wiring the RPC handler
+
+Here's how to verify it end-to-end.
+
+First, make sure the whole stack is up — Postgres and NATS via the root
+`docker-compose.yml` (`make up` from the workspace root), and the `stores`
+service itself running (`go run ./cmd/service` from `01-stores/`, or however
+you've been starting it). Confirm the health check still passes first
+(`curl http://localhost:8080/health`, adjusting the port if your `.env`
+overrides `SRV_PORT`) — that rules out a connectivity problem before you're
+debugging the Connect-specific piece.
+
+Then the actual `CreateStore` call:
+
+```
+curl -v \
+    -H "Content-Type: application/json" \
+    -H "Connect-Protocol-Version: 1" \
+    -d '{"name":"Corner Market","location":"Belo Horizonte"}' \
+    http://localhost:8080/stores.v1.StoresService/CreateStore
+```
+
+Two things about this that are genuinely Connect-specific, not something raw
+`protoc`/gRPC-gateway carries over:
+
+`Connect-Protocol-Version: 1` is what tells the generated handler to speak
+Connect's own HTTP+JSON protocol rather than expecting a gRPC-framed request.
+Without it, some Connect server configurations will still auto-detect JSON from
+the `Content-Type` and work anyway, but including the header explicitly is the
+documented, reliable way to invoke it — worth keeping in the habit since not
+every Connect setup enables detection-without-the-header.
+
+The JSON body's field names are `camelCase` versions of your proto field names
+by default (`storeId` rather than `store_id`, if you end up testing a request
+with such a field) — protobuf's JSON mapping does this automatically; nothing to
+configure, just something to expect when a field name doesn't match what's in
+`api.proto`.
+
+On success you should get back a `200` with a JSON body shaped like:
+
+```json
+{
+    "store": {
+        "id": "<uuid>",
+        "name": "Corner Market",
+        "location": "Belo Horizonte",
+        "participating": false
+    }
+}
+```
+
+If instead you get a `404`, that's the `ServeMux` prefix-pattern concern I
+flagged — worth pasting back the full `-v` output so we can see the exact path
+curl hit versus what `router.Handle` registered. If you get a `500`, that's most
+likely NATS or Postgres unreachable (same failure mode `CreateStore.Execute`
+already had in Phase 3) — the response body should carry the error text via
+`connect.NewError`'s wrapping, and the service's own log output (`stores.log`,
+per `main.go`'s logger setup) will have the underlying error.
+
+Paste back whatever you get — success or failure — and we'll go from there.
+
+That's a clean full-stack round trip — confirmed by three independent signals:
+the server log shows the event was published to JetStream
+(`stores.store.StoreCreated`, `seq=3`), the HTTP response came back `200` with a
+real generated UUID, and the Postgres row backs it all up with matching data.
+Step 3 is done — the whole chain (proto → generated code → Connect handler →
+existing `application.CreateStore` → Postgres + NATS) is proven working
+end-to-end.
+
+One small thing worth noting, not a bug: the JSON response omits
+`"participating":false` entirely, even though the field exists in the proto and
+the DB row confirms it's really `false`. This is expected protobuf JSON behavior
+— by default, protobuf's JSON marshaler omits any scalar field still at its zero
+value (`false`, `0`, `""`), to keep wire payloads smaller. It'll show up in the
+JSON the moment a store's `participating` is `true`. Nothing to fix; just useful
+to know so a future "missing field" doesn't look like a bug when it's really a
+`false`.
+
+Step 3 complete. Ready to move to Step 4 — the remaining Store command use cases
+(`Rebrand`, `EnableParticipation`, `DisableParticipation`) and their handlers,
+following the exact same `CreateStore` template (application-layer use case →
+Connect handler → wire into `module.go`)?
+
+### **Step 4 — Remaining Store command use cases + handlers**

@@ -119,11 +119,12 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	productRepo := postgres.NewProductRepository(pool)
 
 	//============================================================================
-	// STORES USE CASE INITIALIZATION
+	// STORES USE CASES INITIALIZATION
 	//============================================================================
 
 	createStoreUC := application.NewCreateStore(storeRepo, publisher, logger)
-	connectServer := connectapi.NewServer(createStoreUC)
+	rebrandStoreUC := application.NewRebrandStore(storeRepo, publisher, logger)
+	connectServer := connectapi.NewServer(createStoreUC, rebrandStoreUC)
 
 	// construct a new Module instance
 	m := &Module{
