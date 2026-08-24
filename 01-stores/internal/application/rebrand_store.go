@@ -8,7 +8,6 @@ import (
 
 	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
 	"github.com/dupakarovsky/eda-storefront/stores/internal/domain"
-	storesevents "github.com/dupakarovsky/eda-storefront/stores/internal/events"
 )
 
 // RebrandStore defines a struct type that is able to cummunicate
@@ -28,7 +27,8 @@ func NewRebrandStore(storeRepo domain.StoreRepository, publisher *foundationnats
 	}
 }
 
-// Execute will connect to the database to persist the Store's name change, than
+// Execute will locate a store that needs rebranding, update it to the repository than
+// publish the Rebrand event to NATS
 func (uc *RebrandStore) Execute(ctx context.Context, storeId, name string) (*domain.Store, error) {
 
 	// locate the store by it's id in the repository
@@ -65,39 +65,13 @@ func (uc *RebrandStore) Execute(ctx context.Context, storeId, name string) (*dom
 	// store was updated. Publish the events on NATS
 	// ------------------------------------------------
 
-	// prepare a new envelope for transporting the event
-	envelope, err := storesevents.NewEnvelope(event)
-	if err != nil {
-		return nil, fmt.Errorf("building envelope: %w", err)
+	//INFO:: If publishDomainEvent fails, the store remains created in the database.
+	//Only the event was not pubslihed. This is a bit unusual, but right now it's what
+	//we can do until we use a more robusts solution that uses Transaction outbox.
+
+	if err = publishDomainEvent(ctx, uc.publisher, uc.logger, event); err != nil {
+		return store, err
 	}
-
-	// conver the envelope into JSON blob
-	payload, err := envelope.Marshal()
-
-	// create a subject to publish to the NATS stream
-	subject, err := storesevents.SubjectFor(event)
-	if err != nil {
-	}
-
-	// publish the event to nats using the retry funtion
-	ack, err := publishWithRetry(ctx, uc.publisher, uc.logger, subject, payload)
-	if err != nil {
-		uc.logger.Error("event publish exhausted retries; store saved but event not delivered",
-			"aggregate_id", event.AggregateID(),
-			"event_name", event.EventName(),
-			"subject", subject,
-			"error", err,
-		)
-
-		//INFO:: If publisheWithRetry fails, the store remains created in the database.
-		//Only the event was not pubslihed. This is a bit unusual, but right now it's what
-		//we can do until we use a more robusts solution that uses Transaction outbox.
-
-		return store, fmt.Errorf("publishing event: %w", err)
-	}
-
-	// event published. emit a log
-	uc.logger.Info("event puslished", "subject", subject, "stream", ack.Stream, "seq", ack.Sequence)
 
 	return store, nil
 }

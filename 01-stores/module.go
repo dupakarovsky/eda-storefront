@@ -124,7 +124,10 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 
 	createStoreUC := application.NewCreateStore(storeRepo, publisher, logger)
 	rebrandStoreUC := application.NewRebrandStore(storeRepo, publisher, logger)
-	connectServer := connectapi.NewServer(createStoreUC, rebrandStoreUC)
+	enableStoreParticipationUC := application.NewEnableStoreParticipation(storeRepo, publisher, logger)
+	disableStoreParticipationUC := application.NewDisableStoreParticipation(storeRepo, publisher, logger)
+
+	connectServer := connectapi.NewServer(createStoreUC, rebrandStoreUC, enableStoreParticipationUC, disableStoreParticipationUC)
 
 	// construct a new Module instance
 	m := &Module{

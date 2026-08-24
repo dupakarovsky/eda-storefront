@@ -1884,3 +1884,100 @@ following the exact same `CreateStore` template (application-layer use case →
 Connect handler → wire into `module.go`)?
 
 ### **Step 4 — Remaining Store command use cases + handlers**
+
+Before the three new use cases, two structural things are worth doing now rather
+than later — both triggered by patterns that are about to repeat for the first
+time.
+
+**1. Extracting the publish tail.** `CreateStore.Execute` ends with five steps —
+build envelope, marshal, resolve subject, publish-with-retry, log — and all
+three new commands need that exact same tail. Repeating it four times (once
+already in `CreateStore`, three more here) is past the point where copy-paste is
+the right call; I'm extracting it into a shared helper and refactoring
+`CreateStore` to use it too, so there's one place this logic lives rather than
+four near-identical copies that could drift.
+
+```go
+// 01-stores/internal/application/publish_event.go
+```
+
+`create_store.go`'s tail collapses accordingly:
+
+```go
+// 01-stores/internal/application/create_store.go
+```
+
+That replaces everything from the old
+`// store saved, prepare event for publishing` comment down to the end of
+`Execute` — the envelope-building, marshaling, subject-resolution, and
+publish-with-retry-and-log block, all now living in `publishDomainEvent`
+instead. Note the returned error is no longer separately wrapped with
+`"publishing event: %w"` at the call site — `publishDomainEvent` already returns
+a properly-contexted error, so re-wrapping it here would just duplicate the
+message.
+
+**2. Real error mapping.** So far every handler failure has come back as
+`connect.CodeInternal` — fine for `CreateStore`, where the only real failure
+modes were Postgres/NATS being down.
+`Rebrand`/`EnableParticipation`/`DisableParticipation` introduce a new failure
+mode: calling them against a store ID that doesn't exist, or toggling
+participation into a state it's already in — both are domain-level rejections
+(`domain.ErrStoreNotFound`, `domain.ErrStoreIsAlreadyParticipating`, etc.), not
+infrastructure failures, and a caller needs to be able to tell those apart (a
+`404`/`CodeNotFound` vs. a `400`/`CodeInvalidArgument` vs. a genuine `500`). One
+small mapper, checked with `errors.Is` so it still works through the use case's
+`fmt.Errorf("...: %w", err)` wrapping:
+
+```go
+// 01-stores/internal/connectapi/errors.go
+```
+
+Now the three new use cases — same shape as `CreateStore`: load, mutate, save,
+publish.
+
+```go
+// 01-stores/internal/application/rebrand_store.go
+```
+
+```go
+// 01-stores/internal/application/enable_store_participation.go
+```
+
+```go
+// 01-stores/internal/application/disable_store_participation.go
+```
+
+Now the Connect handlers replace their `CodeUnimplemented` stubs:
+
+```go
+
+```
+
+```go
+// 01-stores/internal/connectapi/server.go
+```
+
+And finally, `module.go` wiring — three more use case constructions, and
+`NewServer`'s call site updated to match its new signature:
+
+```go
+// 01-stores/module.go
+```
+
+_(unchanged — still one field; only the construction below changes)
+
+```go
+// 01-stores/module.go
+```
+
+The `Module` struct's `CreateStoreUC` field and its assignment in the returned
+`&Module{...}` literal stay as they are — nothing else in `module.go` needs to
+change.
+
+Once you've made these edits, `go build ./...` from `01-stores/` should still
+compile clean (this is a good moment to lean on the compiler — if any method
+signature doesn't line up with `StoresServiceHandler`'s interface, it'll fail
+loudly rather than silently). Let me know how the build goes, and then we'll do
+a real request against one of these three — probably `EnableStoreParticipation`
+against the store you already created, since that gives us a clean before/after
+to check in Postgres.

@@ -13,15 +13,24 @@ import (
 // The Server struct needs to implement all methods from the StoresServiceHandler
 // interface api.connect in order to make grcp requests
 type Server struct {
-	createStoreUC  *application.CreateStore
-	rebrandStoreUC *application.RebrandStore
+	createStoreUC             *application.CreateStore
+	rebrandStoreUC            *application.RebrandStore
+	enableStoreParticipation  *application.EnableStoreParticipation
+	disableStoreParticipation *application.DisableStoreParticipation
 }
 
 // NewServer instantiates a new server
-func NewServer(createStoreUC *application.CreateStore, rebrandStore *application.RebrandStore) *Server {
+func NewServer(
+	createStoreUC *application.CreateStore,
+	rebrandStore *application.RebrandStore,
+	enableStoreParticipation *application.EnableStoreParticipation,
+	disableStoreParticipation *application.DisableStoreParticipation,
+) *Server {
 	return &Server{
-		createStoreUC:  createStoreUC,
-		rebrandStoreUC: rebrandStore,
+		createStoreUC:             createStoreUC,
+		rebrandStoreUC:            rebrandStore,
+		enableStoreParticipation:  enableStoreParticipation,
+		disableStoreParticipation: disableStoreParticipation,
 	}
 }
 
@@ -32,12 +41,12 @@ func (s *Server) CreateStore(ctx context.Context, req *connect.Request[storespb.
 	id := uuid.NewString()
 
 	// run the Execute function to create a Store. It'll connect to the gRPC server before
-	// executing the command
+	// executing the command.
 	store, err := s.createStoreUC.Execute(ctx, id, req.Msg.Name,
 		req.Msg.Location)
 	if err != nil {
-		// failed to connect to the server
-		return nil, connect.NewError(connect.CodeInternal, err)
+		// failed to connect to the server. NATS or Postgres are down
+		return nil, mapError(err)
 	}
 
 	// create a response message in the CreateStoreResponse format
@@ -60,7 +69,7 @@ func (s *Server) RebrandStore(ctx context.Context, req *connect.Request[storespb
 	store, err := s.rebrandStoreUC.Execute(ctx, req.Msg.StoreId, req.Msg.Name)
 	if err != nil {
 		// failed to connect to the server
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, mapError(err)
 	}
 
 	// emite a response to the caller
@@ -72,12 +81,38 @@ func (s *Server) RebrandStore(ctx context.Context, req *connect.Request[storespb
 	return response, nil
 }
 
+// EnableStoreParticipation take an rpc message Request, connect to the serer and emit a EnableStoreParticipation event
 func (s *Server) EnableStoreParticipation(ctx context.Context, req *connect.Request[storespb.EnableStoreParticipationRequest]) (*connect.Response[storespb.EnableStoreParticipationResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+
+	// call the EnableStoreParticipation usecase
+	store, err := s.enableStoreParticipation.Execute(ctx, req.Msg.StoreId)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	// generate a response to the caller
+	response := connect.NewResponse(&storespb.EnableStoreParticipationResponse{
+		Store: toProtoStore(store),
+	})
+
+	return response, nil
 }
 
+// DisableStoreParticipation takes an rpc message Request, connect to the serer and emit a DisableStoreParticipation event
 func (s *Server) DisableStoreParticipation(ctx context.Context, req *connect.Request[storespb.DisableStoreParticipationRequest]) (*connect.Response[storespb.DisableStoreParticipationResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+
+	// call the DisableStoreParticipation usecase
+	store, err := s.disableStoreParticipation.Execute(ctx, req.Msg.StoreId)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	// generate a response to the caller
+	response := connect.NewResponse(&storespb.DisableStoreParticipationResponse{
+		Store: toProtoStore(store),
+	})
+
+	return response, nil
 }
 
 func (s *Server) AddProduct(ctx context.Context, req *connect.Request[storespb.AddProductRequest]) (*connect.Response[storespb.AddProductResponse], error) {
