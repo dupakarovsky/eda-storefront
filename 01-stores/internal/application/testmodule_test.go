@@ -3,13 +3,16 @@ package application_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/dupakarovsky/eda-storefront/foundation/config"
 	"github.com/dupakarovsky/eda-storefront/foundation/logging"
 	"github.com/dupakarovsky/eda-storefront/stores"
 )
 
-func newTestModule(t *testing.T) *stores.Module {
+const ApplicationTest string = "application_test.log"
+
+func newTestModule(logFileName string, t *testing.T) *stores.Module {
 	t.Helper()
 
 	// load the .env file before test begins
@@ -22,7 +25,8 @@ func newTestModule(t *testing.T) *stores.Module {
 	}
 
 	// create the logger test then close the test is done
-	logger, logFile, err := logging.New("create_store_retry_test.log", cfg.Logger.TermLevel, cfg.Logger.FileLevel)
+	logger, logFile, err := logging.New(logFileName, cfg.Logger.TermLevel, cfg.Logger.FileLevel)
+	//logger, logFile, err := logging.New("create_store_retry_test.log", cfg.Logger.TermLevel, cfg.Logger.FileLevel)
 	if err != nil {
 		t.Fatalf("failed to create logger: %v", err)
 	}
@@ -43,4 +47,9 @@ func newTestModule(t *testing.T) *stores.Module {
 	})
 
 	return mod
+}
+
+func uniqueID(tag string) string {
+	id := tag + "-" + time.Now().Format("20060102150405.000000")
+	return id
 }

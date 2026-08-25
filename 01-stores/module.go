@@ -35,6 +35,11 @@ type Module struct {
 	EnableStoreParticipationUC  *application.EnableStoreParticipation
 	DisableStoreParticipationUC *application.DisableStoreParticipation
 	RebrandStoreUC              *application.RebrandStore
+	AddProductUC                *application.AddProduct
+	RebrandProductUC            *application.RebrandProduct
+	IncreaseProductPriceUC      *application.IncreaseProductPrice
+	DecreaseProductPriceUC      *application.DecreaseProductPrice
+	RemoveProductUC             *application.RemoveProduct
 
 	ConnectServer *connectapi.Server
 }
@@ -161,6 +166,11 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		RebrandStoreUC:              rebrandStoreUC,
 		EnableStoreParticipationUC:  enableStoreParticipationUC,
 		DisableStoreParticipationUC: disableStoreParticipationUC,
+		AddProductUC:                addProductUC,
+		RebrandProductUC:            rebrandProductUC,
+		IncreaseProductPriceUC:      increaseProductPriceUC,
+		DecreaseProductPriceUC:      decreaseProductPriceUC,
+		RemoveProductUC:             removeProductUC,
 		ConnectServer:               connectServer,
 	}
 	return m, nil

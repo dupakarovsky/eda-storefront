@@ -11,7 +11,7 @@ import (
 // loadRealEnv will need to load the .env
 func TestEnableStoreParticipation_Execute_Succeeds(t *testing.T) {
 
-	mod := newTestModule(t)
+	mod := newTestModule(ApplicationTest, t)
 
 	// context for the test to run
 	ctx := t.Context()
@@ -43,7 +43,7 @@ func TestEnableStoreParticipation_Execute_Succeeds(t *testing.T) {
 }
 
 func TestEnableStoreParticipation_Execute_RejectsAlreadyEnabled(t *testing.T) {
-	mod := newTestModule(t)
+	mod := newTestModule(ApplicationTest, t)
 	ctx := t.Context()
 
 	id := "enable-twice-test-" + time.Now().Format("20060102150405.000000")

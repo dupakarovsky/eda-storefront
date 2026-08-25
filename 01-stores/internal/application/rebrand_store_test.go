@@ -11,7 +11,7 @@ import (
 func TestRebrandStore_Succeeds(t *testing.T) {
 
 	// instantiate the module and the context for the test
-	mod := newTestModule(t)
+	mod := newTestModule(ApplicationTest, t)
 	ctx := t.Context()
 
 	// unique ID for this test
@@ -38,7 +38,7 @@ func TestRebrandStore_Succeeds(t *testing.T) {
 func TestRebrandStore_RejectsBlankName(t *testing.T) {
 
 	// instantiate the module and the context for the test
-	mod := newTestModule(t)
+	mod := newTestModule("application_test.log", t)
 	ctx := t.Context()
 
 	// unique ID for this test

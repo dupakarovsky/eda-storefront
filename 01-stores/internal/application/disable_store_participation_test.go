@@ -10,7 +10,7 @@ import (
 )
 
 func TestDisableStoreParticipation_Execute_Succeeds(t *testing.T) {
-	mod := newTestModule(t)
+	mod := newTestModule(ApplicationTest, t)
 	ctx := t.Context()
 
 	id := "disable-test-" + time.Now().Format("20060102150405.000000")
@@ -34,7 +34,7 @@ func TestDisableStoreParticipation_Execute_Succeeds(t *testing.T) {
 }
 
 func TestDisableStoreParticipation_Execute_RejectsAlreadyDisabled(t *testing.T) {
-	mod := newTestModule(t)
+	mod := newTestModule(ApplicationTest, t)
 	ctx := t.Context()
 
 	id := "disable-test-twice-" + time.Now().Format("20060102150405.000000")

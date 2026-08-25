@@ -53,46 +53,6 @@ func (uc *CreateStore) Execute(ctx context.Context, id, name, location string) (
 		return store, err
 	}
 
-	// store saved, prepare event for publishing
-	// -----------------------------------------
-
-	// prepare the event for transport
-	// envelope, err := storesevents.NewEnvelope(event)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("building envelope: %w", err)
-	// }
-	//
-	// // marshal the envelope into JSON bytes
-	// payload, err := envelope.Marshal()
-	// if err != nil {
-	// 	return nil, fmt.Errorf("marshaling envelope: %w", err)
-	// }
-	//
-	// // ready the subject to publish under the NATS stream
-	// subject, err := storesevents.SubjectFor(event)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("resolving subject: %w", err)
-	// }
-	//
-	// // publish the event payload to NATS using the retry-logic
-	// ack, err := publishWithRetry(ctx, uc.publisher, uc.logger, subject, payload)
-	// if err != nil {
-	// 	uc.logger.Error("event publish exhausted retries; store saved but event not delivered",
-	// 		"aggregate_id", event.AggregateID(),
-	// 		"event_name", event.EventName(),
-	// 		"subject", subject,
-	// 		"error", err,
-	// 	)
-	//
-	// 	return store, fmt.Errorf("publishing event: %w", err)
-	// }
-	//
-	// event successfuly published
-	// ---------------------------
-	//
-	// event published. emit a log
-	// uc.logger.Info("event puslished", "subject", subject, "stream", ack.Stream, "seq", ack.Sequence)
-
 	// return the Store with no errors
 	return store, nil
 }
