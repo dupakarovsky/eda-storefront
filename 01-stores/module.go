@@ -31,7 +31,11 @@ type Module struct {
 	StoreRepo   domain.StoreRepository
 	ProductRepo domain.ProductRepository
 
-	CreateStoreUC *application.CreateStore
+	CreateStoreUC               *application.CreateStore
+	EnableStoreParticipationUC  *application.EnableStoreParticipation
+	DisableStoreParticipationUC *application.DisableStoreParticipation
+	RebrandStoreUC              *application.RebrandStore
+
 	ConnectServer *connectapi.Server
 }
 
@@ -131,15 +135,18 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 
 	// construct a new Module instance
 	m := &Module{
-		Logger:        logger,
-		Pool:          pool,
-		NC:            nc,
-		JS:            js,
-		Publisher:     publisher,
-		StoreRepo:     storeRepo,
-		ProductRepo:   productRepo,
-		CreateStoreUC: createStoreUC,
-		ConnectServer: connectServer,
+		Logger:                      logger,
+		Pool:                        pool,
+		NC:                          nc,
+		JS:                          js,
+		Publisher:                   publisher,
+		StoreRepo:                   storeRepo,
+		ProductRepo:                 productRepo,
+		CreateStoreUC:               createStoreUC,
+		RebrandStoreUC:              rebrandStoreUC,
+		EnableStoreParticipationUC:  enableStoreParticipationUC,
+		DisableStoreParticipationUC: disableStoreParticipationUC,
+		ConnectServer:               connectServer,
 	}
 	return m, nil
 }
