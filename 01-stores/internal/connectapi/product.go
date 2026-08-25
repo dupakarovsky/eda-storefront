@@ -98,6 +98,22 @@ func (s *Server) RemoveProduct(ctx context.Context, req *connect.Request[storesp
 	return connect.NewResponse(&storespb.RemoveProductResponse{}), nil
 }
 
+// ListProducts will connect directly to the repository to retrieve a list of products from a particular store
+// as it does not need a
 func (s *Server) ListProducts(ctx context.Context, req *connect.Request[storespb.ListProductsRequest]) (*connect.Response[storespb.ListProductsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+
+	products, err := s.listProductsUC.Execute(ctx, req.Msg.StoreId)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	protoProducts := make([]*storespb.Product, 0, len(products))
+	for _, product := range products {
+		protoProducts = append(protoProducts, toProtoProduct(product))
+	}
+
+	return connect.NewResponse(&storespb.ListProductsResponse{
+		Products: protoProducts,
+	}), nil
+
 }

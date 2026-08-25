@@ -9,6 +9,7 @@ import (
 // interface api.connect in order to make grcp requests
 type Server struct {
 	createStoreUC               *application.CreateStore
+	getStoreUC                  *application.GetStore
 	rebrandStoreUC              *application.RebrandStore
 	enableStoreParticipationUC  *application.EnableStoreParticipation
 	disableStoreParticipationUC *application.DisableStoreParticipation
@@ -17,11 +18,13 @@ type Server struct {
 	increaseProductPriceUC      *application.IncreaseProductPrice
 	decreaseProductPriceUC      *application.DecreaseProductPrice
 	removeProductUC             *application.RemoveProduct
+	listProductsUC              *application.ListProducts
 }
 
 // NewServer instantiates a new server
 func NewServer(
 	createStoreUC *application.CreateStore,
+	getStoreUC *application.GetStore,
 	rebrandStore *application.RebrandStore,
 	enableStoreParticipationUC *application.EnableStoreParticipation,
 	disableStoreParticipationUC *application.DisableStoreParticipation,
@@ -30,9 +33,11 @@ func NewServer(
 	increaseProductPriceUC *application.IncreaseProductPrice,
 	decreaseProductPriceUC *application.DecreaseProductPrice,
 	removeProductUC *application.RemoveProduct,
+	listProductsUC *application.ListProducts,
 ) *Server {
 	return &Server{
 		createStoreUC:               createStoreUC,
+		getStoreUC:                  getStoreUC,
 		rebrandStoreUC:              rebrandStore,
 		enableStoreParticipationUC:  enableStoreParticipationUC,
 		disableStoreParticipationUC: disableStoreParticipationUC,
@@ -41,5 +46,6 @@ func NewServer(
 		increaseProductPriceUC:      increaseProductPriceUC,
 		decreaseProductPriceUC:      decreaseProductPriceUC,
 		removeProductUC:             removeProductUC,
+		listProductsUC:              listProductsUC,
 	}
 }

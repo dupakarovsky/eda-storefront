@@ -32,7 +32,7 @@ func NewRemoveProduct(productRepo domain.ProductRepository, publisher *foundatio
 func (uc *RemoveProduct) Execute(ctx context.Context, productID string) error {
 
 	// locate the product in the database
-	product, err := uc.productRepo.FindByID(ctx, productID)
+	product, err := uc.productRepo.FindByIDForUpdate(ctx, productID)
 	if err != nil {
 		return fmt.Errorf("finding product: %w", err)
 	}

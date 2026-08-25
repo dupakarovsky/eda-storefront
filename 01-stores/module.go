@@ -41,6 +41,9 @@ type Module struct {
 	DecreaseProductPriceUC      *application.DecreaseProductPrice
 	RemoveProductUC             *application.RemoveProduct
 
+	GetStoreUC     *application.GetStore
+	ListProductsUC *application.ListProducts
+
 	ConnectServer *connectapi.Server
 }
 
@@ -132,6 +135,7 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	//============================================================================
 
 	createStoreUC := application.NewCreateStore(storeRepo, publisher, logger)
+	getStoresUC := application.NewGetStore(storeRepo)
 	rebrandStoreUC := application.NewRebrandStore(storeRepo, publisher, logger)
 	enableStoreParticipationUC := application.NewEnableStoreParticipation(storeRepo, publisher, logger)
 	disableStoreParticipationUC := application.NewDisableStoreParticipation(storeRepo, publisher, logger)
@@ -140,9 +144,11 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	increaseProductPriceUC := application.NewIncreaseProductPrice(productRepo, publisher, logger)
 	decreaseProductPriceUC := application.NewDecreaseProductPrice(productRepo, publisher, logger)
 	removeProductUC := application.NewRemoveProduct(productRepo, publisher, logger)
+	listProductsUC := application.NewListProducts(productRepo)
 
 	connectServer := connectapi.NewServer(
 		createStoreUC,
+		getStoresUC,
 		rebrandStoreUC,
 		enableStoreParticipationUC,
 		disableStoreParticipationUC,
@@ -151,17 +157,20 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		increaseProductPriceUC,
 		decreaseProductPriceUC,
 		removeProductUC,
+		listProductsUC,
 	)
 
 	// construct a new Module instance
 	m := &Module{
-		Logger:                      logger,
-		Pool:                        pool,
-		NC:                          nc,
-		JS:                          js,
-		Publisher:                   publisher,
-		StoreRepo:                   storeRepo,
-		ProductRepo:                 productRepo,
+		Logger:    logger,
+		Pool:      pool,
+		NC:        nc,
+		JS:        js,
+		Publisher: publisher,
+
+		StoreRepo:   storeRepo,
+		ProductRepo: productRepo,
+
 		CreateStoreUC:               createStoreUC,
 		RebrandStoreUC:              rebrandStoreUC,
 		EnableStoreParticipationUC:  enableStoreParticipationUC,
@@ -172,6 +181,9 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		DecreaseProductPriceUC:      decreaseProductPriceUC,
 		RemoveProductUC:             removeProductUC,
 		ConnectServer:               connectServer,
+
+		GetStoreUC:     getStoresUC,
+		ListProductsUC: listProductsUC,
 	}
 	return m, nil
 }

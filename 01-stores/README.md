@@ -1964,7 +1964,7 @@ And finally, `module.go` wiring — three more use case constructions, and
 // 01-stores/module.go
 ```
 
-_(unchanged — still one field; only the construction below changes)
+\_(unchanged — still one field; only the construction below changes)
 
 ```go
 // 01-stores/module.go
@@ -1981,3 +1981,140 @@ loudly rather than silently). Let me know how the build goes, and then we'll do
 a real request against one of these three — probably `EnableStoreParticipation`
 against the store you already created, since that gives us a clean before/after
 to check in Postgres.
+
+### **Step 6 — Query path** (`GetStore`, catalog/product query) —
+
+Both points are well-argued, and I agree with both — worth walking through why
+before the code.
+
+**On the layering.** You're right, and this is actually a coherent extension of
+a principle already on record: ADL 0002 decided repositories stay
+`Load`/`Save`-shaped rather than exposing broader query surfaces, specifically
+because "a read/query surface remains genuinely unaddressed and is deferred to
+whenever Phase 4's API layer defines what queries are actually needed" (Phase
+2's own words). That deferral answered _what_ the query methods look like — it
+didn't settle _who's allowed to call them directly_. Your point is really about
+trust boundaries, not code organization: `connectapi.Server` sits directly on
+the wire, and once it can reach a repository unfiltered, "the repository only
+receives sanitized data" stops being true for every read, in in principle for
+writes too the moment someone extends a query handler with an unvalidated
+parameter later. Keeping every path — read or write — funneled through
+`application` means there's exactly one place that boundary is enforced, not
+two, and a future validation/pagination/authorization concern has one obvious
+home instead of a decision about which of two layers should own it. I'll
+restructure Step 6 around that: `GetStoreQuery`/`ListProductsQuery` types, thin
+as they are today, living in `application` alongside every other use case.
+
+**On the lock.** Agreed this is worth fixing now rather than carrying forward —
+and I'd actually go a bit further on the diagnosis: right now, `FindByID`'s
+`FOR UPDATE` isn't just wrong for a read, it's _not doing anything at all_ for
+the writes either. Postgres only honors row locks for the lifetime of a
+transaction, and every repository call today runs as its own implicit
+single-statement transaction against the bare `*pgxpool.Pool` — by the time
+`Save` runs afterward, it's a brand-new implicit transaction with no memory of
+any lock the earlier `FindByID` took. This matches Phase 2's own note that the
+lock is "real but dormant until Phase 4 wires an actual transaction spanning
+load→mutate→save" — that transaction has never existed yet. So there are really
+two separate fixes bundled in what you're asking for:
+
+1. **Stop using `FOR UPDATE` for genuine reads** — a five-minute fix, scoped
+   entirely to this Step.
+1. **Make the existing row-locking real**, by adding a `WithTx` primitive and
+   threading an actual spanning transaction through every command's
+   load→mutate→save — this is exactly the "actual transaction" Phase 2 flagged
+   as owed, and it touches all eight existing command use cases, not just this
+   Step's two queries.
+
+I'd like to do (1) now, as part of Step 6, and treat (2) as its own follow-up —
+deliberately, not as a way of dodging it. It's system-wide in the same sense as
+ADL 0007's outbox deferral was: real correctness debt, explicitly named, worth
+its own ADL entry and its own dedicated pass rather than a rushed retrofit of
+eight use cases squeezed into a read-path Step. Does that split work for you, or
+would you rather fold the full transactional retrofit into Phase 4 now before we
+close it out?
+
+Assuming the split is fine for now, here's Step 6 with both changes:
+
+**Repository split** — `FindByID` becomes the plain, lock-free read;
+`FindByIDForUpdate` is the locking variant, kept for the command use cases that
+already expect that semantics:
+
+```go
+// 01-stores/internal/domain/store_repository.go
+```
+
+```go
+// 01-stores/internal/domain/product_repository.go
+```
+
+```go
+// 01-stores/internal/postgres/stores_repository.go
+```
+
+Same split for `ProductRepository` — `FindByID` drops `FOR UPDATE`,
+`FindByIDForUpdate` keeps it:
+
+```go
+// 01-stores/internal/postgres/product_repository.go
+```
+
+`ListByStoreID` and `Executor`'s new `Query` method stay exactly as I gave them
+a moment ago — nothing about the lock split changes those.
+
+Every existing command use case (`RebrandStore`, `EnableStoreParticipation`,
+`AddProduct`'s siblings, etc.) needs its `FindByID` call swapped to
+`FindByIDForUpdate`, so their existing behavior is preserved rather than
+silently losing the lock they were written to expect:
+
+```go
+// 01-stores/internal/application/rebrand_store.go
+```
+
+Same one-line change in `enable_store_participation.go`,
+`disable_store_participation.go`, `rebrand_product.go`,
+`increase_product_price.go`, `decrease_product_price.go`, and
+`remove_product.go` (each swapping their respective `FindByID` call to
+`FindByIDForUpdate`). `create_store.go`/`add_product.go` are unaffected — they
+construct new aggregates, nothing to look up first.
+
+Now the two query use cases, kept deliberately thin per the reasoning above:
+
+```go
+// 01-stores/internal/application/get_store.go
+```
+
+```go
+// 01-stores/internal/application/list_products.go
+```
+
+`Server` goes back to depending only on use cases, no repositories:
+
+```go
+// 01-stores/internal/connectapi/server.go
+```
+
+```go
+// 01-stores/internal/connectapi/server.go
+```
+
+And `module.go` — two more use case constructions, `NewServer`'s call site
+updated, `Executor` interface change picked up automatically since `pool`
+already satisfies any superset of `Exec`/`QueryRow`/`Query`:
+
+```go
+// 01-stores/module.go
+```
+
+```go
+// 01-stores/module.go
+)
+```
+
+```go
+// 01-stores/module.go
+```
+
+`go build ./...` should catch anywhere a `FindByID` call still needs to become
+`FindByIDForUpdate` — let me know how it goes, and once it's clean we'll write
+the test pass for these two queries before deciding how you'd like to scope the
+`WithTx` follow-up.

@@ -32,7 +32,7 @@ func NewRebrandStore(storeRepo domain.StoreRepository, publisher *foundationnats
 func (uc *RebrandStore) Execute(ctx context.Context, storeId, name string) (*domain.Store, error) {
 
 	// locate the store by it's id in the repository
-	store, err := uc.storeRepo.FindByID(ctx, storeId)
+	store, err := uc.storeRepo.FindByIDForUpdate(ctx, storeId)
 	if err != nil {
 		switch {
 		// store not found

@@ -53,6 +53,42 @@ func (r *ProductRepository) FindByID(ctx context.Context, id string) (*domain.Pr
 	selectForUpdateStmt := `
 	SELECT id, store_id, name, description, sku, price 
 	FROM products WHERE id = $1 
+	`
+
+	// variables that will hold the data from the database
+	var (
+		productID   string
+		storeID     string
+		name        string
+		description string
+		sku         string
+		price       float64 // pgx converts NUMERIC to float64 natively
+	)
+
+	// execute the query and record the column values into the variables
+	err := r.db.QueryRow(ctx, selectForUpdateStmt, id).Scan(&productID, &storeID, &name, &description, &sku, &price)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil, domain.ErrProductNotFound
+		default:
+			return nil, fmt.Errorf("finding product %q: %w", productID, err)
+		}
+	}
+
+	// reconstitute the values into a Product struct
+	product := domain.ReconstituteProduct(productID, storeID, name, description, sku, price)
+
+	return product, nil
+}
+
+// FindByIDForUpdate should execute inside a transaction
+func (r *ProductRepository) FindByIDForUpdate(ctx context.Context, id string) (*domain.Product, error) {
+
+	//  select for upate statement
+	selectForUpdateStmt := `
+	SELECT id, store_id, name, description, sku, price 
+	FROM products WHERE id = $1 
 	FOR UPDATE
 	`
 
@@ -94,4 +130,59 @@ func (r *ProductRepository) Delete(ctx context.Context, id string) error {
 	}
 
 	return nil
+}
+
+// ListByStoreID will query the repository for all products from particular store
+func (r *ProductRepository) ListByStoreID(ctx context.Context, storeID string) ([]*domain.Product, error) {
+
+	// query to run
+	selectStmt := `
+	SELECT id, store_id, name, description, sku, price 
+	FROM products 
+	WHERE store_id = $1
+	`
+
+	// execute the query to receive the iterator
+	rows, err := r.db.Query(ctx, selectStmt, storeID)
+	if err != nil {
+		return nil, fmt.Errorf("listing products for store %q: %w", storeID, err)
+	}
+	// close the iterator when loop finishes
+	defer rows.Close()
+
+	// product will receive the returned entries from the database.
+	// initializing the products slice allows for marshaling [] instead of nil.
+	products := make([]*domain.Product, 0)
+
+	// begin iteration of returned values
+	for rows.Next() {
+
+		// product will receive the reconstituted product from the database
+		var (
+			productID   string
+			storeID     string
+			name        string
+			description string
+			sku         string
+			price       float64
+		)
+
+		// copy the database columns to each of the variables
+		if err := rows.Scan(&productID, &storeID, &name, &description, &sku, &price); err != nil {
+			return nil, fmt.Errorf("scanning product row: %w", err)
+		}
+
+		// reconstitute the product into a domain struct
+		product := domain.ReconstituteProduct(productID, storeID, name, description, sku, price)
+
+		// add the current product to the return type
+		products = append(products, product)
+	}
+
+	// iteration completed; verify scan
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating product rows: %w", err)
+	}
+
+	return products, nil
 }

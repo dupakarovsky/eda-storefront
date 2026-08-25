@@ -32,7 +32,7 @@ func NewIncreaseProductPrice(productRepo domain.ProductRepository, publisher *fo
 func (uc *IncreaseProductPrice) Execute(ctx context.Context, productID string, price float64) (*domain.Product, error) {
 
 	// try to locate the product
-	product, err := uc.productRepo.FindByID(ctx, productID)
+	product, err := uc.productRepo.FindByIDForUpdate(ctx, productID)
 	if err != nil {
 		return nil, fmt.Errorf("finding product: %w", err)
 	}

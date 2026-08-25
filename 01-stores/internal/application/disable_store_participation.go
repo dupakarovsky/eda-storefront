@@ -31,7 +31,7 @@ func NewDisableStoreParticipation(storeRepo domain.StoreRepository, publisher *f
 func (uc *DisableStoreParticipation) Execute(ctx context.Context, storeId string) (*domain.Store, error) {
 
 	// locate the store that needs disabling participation
-	store, err := uc.storeRepo.FindByID(ctx, storeId)
+	store, err := uc.storeRepo.FindByIDForUpdate(ctx, storeId)
 	if err != nil {
 		return nil, fmt.Errorf("finding store: %w", err)
 	}

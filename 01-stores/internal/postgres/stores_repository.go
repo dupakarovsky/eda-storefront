@@ -50,7 +50,6 @@ func (r *StoreRepository) FindByID(ctx context.Context, id string) (*domain.Stor
 	SELECT id, name, location, participating 
 	FROM stores 
 	WHERE id = $1
-	FOR UPDATE
 	`
 
 	// variables that will hold the values from the record
@@ -77,4 +76,34 @@ func (r *StoreRepository) FindByID(ctx context.Context, id string) (*domain.Stor
 	store := domain.ReconstituteStore(storeID, name, location, participating)
 
 	return store, nil
+}
+
+// FindByIDForUpdate will execute inside a transaction
+func (r *StoreRepository) FindByIDForUpdate(ctx context.Context, id string) (*domain.Store, error) {
+
+	selectForUpdateStmt := `
+	SELECT id, name, location, participating
+	FROM stores
+	WHERE id = $1
+	FOR UPDATE
+	`
+
+	var (
+		storeID       string
+		name          string
+		location      string
+		participating bool
+	)
+
+	err := r.db.QueryRow(ctx, selectForUpdateStmt, id).Scan(&storeID, &name, &location, &participating)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil, domain.ErrStoreNotFound
+		default:
+			return nil, fmt.Errorf("finding store %q: %w", id, err)
+		}
+	}
+
+	return domain.ReconstituteStore(storeID, name, location, participating), nil
 }

@@ -31,7 +31,7 @@ func NewRebrandProduct(productRepo domain.ProductRepository, publisher *foundati
 func (uc *RebrandProduct) Execute(ctx context.Context, productID, name, description string) (*domain.Product, error) {
 
 	// try to locate the product in the database
-	product, err := uc.productRepo.FindByID(ctx, productID)
+	product, err := uc.productRepo.FindByIDForUpdate(ctx, productID)
 	if err != nil {
 		return nil, fmt.Errorf("finding product: %w", err)
 	}
