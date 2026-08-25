@@ -2118,3 +2118,36 @@ already satisfies any superset of `Exec`/`QueryRow`/`Query`:
 `FindByIDForUpdate` — let me know how it goes, and once it's clean we'll write
 the test pass for these two queries before deciding how you'd like to scope the
 `WithTx` follow-up.
+
+#### Test files gor GetSTore and ListProducts
+
+Two test files, following the same conservative shape as Steps 4–5 — one success
+case and one rejection/edge case each. `ListProducts` gets a slightly different
+second case than "rejection," since there's no domain rule to violate here — the
+interesting edge is confirming a store with zero products comes back as an empty
+slice, not an error and not nil, which is exactly the
+`make([]*domain.Product, 0)` behavior from Step 6 worth locking in with a real
+assertion.
+
+```go
+// 01-stores/internal/application/get_store_test.go
+```
+
+```go
+// 01-stores/internal/application/list_products_test.go
+```
+
+Two things worth calling out in
+`TestListProducts_Execute_ReturnsAllProductsForStore`: it asserts the specific
+order `[Apples, Bananas]`, not just "contains both" — that's directly checking
+the `ORDER BY name` in `ListByStoreID`'s SQL is real, not incidental. And
+`TestListProducts_Execute_ReturnsEmptySliceForStoreWithNoProducts` asserts
+`products == nil` is false as its own explicit check, separate from the length
+check — this is the one that actually catches a regression if `ListByStoreID`'s
+`make([]*domain.Product, 0)` ever got simplified back to
+`var products []*domain.Product` by someone (possibly a future me) who didn't
+know why it mattered.
+
+Same run pattern as before —
+`go test -v ./internal/application/ -run=<TestName>` one at a time, real
+Postgres/NATS up. Let me know what comes back.
