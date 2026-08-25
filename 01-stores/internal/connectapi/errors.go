@@ -31,6 +31,12 @@ func mapError(err error) error {
 		errors.Is(err, domain.ErrStoreLocationIsBlank),
 		errors.Is(err, domain.ErrStoreIsAlreadyParticipating),
 		errors.Is(err, domain.ErrStoreIsAlreadyNotParticipating):
+		//-------------------------------------------------------
+		errors.Is(err, domain.ErrProductNameIsBlank)
+		errors.Is(err, domain.ErrProductPriceIsNegative)
+		errors.Is(err, domain.ErrNotAPriceDecrease)
+		errors.Is(err, domain.ErrNotAPriceDecrease)
+
 		return connect.NewError(connect.CodeInvalidArgument, err)
 
 	// connectivity errors are mapped to CodeInternal

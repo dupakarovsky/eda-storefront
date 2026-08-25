@@ -130,8 +130,23 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	rebrandStoreUC := application.NewRebrandStore(storeRepo, publisher, logger)
 	enableStoreParticipationUC := application.NewEnableStoreParticipation(storeRepo, publisher, logger)
 	disableStoreParticipationUC := application.NewDisableStoreParticipation(storeRepo, publisher, logger)
+	addProductUC := application.NewAddProduct(productRepo, publisher, logger)
+	rebrandProductUC := application.NewRebrandProduct(productRepo, publisher, logger)
+	increaseProductPriceUC := application.NewIncreaseProductPrice(productRepo, publisher, logger)
+	decreaseProductPriceUC := application.NewDecreaseProductPrice(productRepo, publisher, logger)
+	removeProductUC := application.NewRemoveProduct(productRepo, publisher, logger)
 
-	connectServer := connectapi.NewServer(createStoreUC, rebrandStoreUC, enableStoreParticipationUC, disableStoreParticipationUC)
+	connectServer := connectapi.NewServer(
+		createStoreUC,
+		rebrandStoreUC,
+		enableStoreParticipationUC,
+		disableStoreParticipationUC,
+		addProductUC,
+		rebrandProductUC,
+		increaseProductPriceUC,
+		decreaseProductPriceUC,
+		removeProductUC,
+	)
 
 	// construct a new Module instance
 	m := &Module{

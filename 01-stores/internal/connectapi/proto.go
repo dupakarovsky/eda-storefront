@@ -13,3 +13,13 @@ func toProtoStore(store *domain.Store) *storespb.Store {
 		Participating: store.Participating,
 	}
 }
+
+func toProtoProduct(product *domain.Product) *storespb.Product {
+	return &storespb.Product{
+		Id:      product.ID,
+		Name:    product.Name,
+		StoreId: product.StoreID,
+		Sku:     product.SKU,
+		Price:   product.Price,
+	}
+}

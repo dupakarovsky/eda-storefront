@@ -82,3 +82,16 @@ func (r *ProductRepository) FindByID(ctx context.Context, id string) (*domain.Pr
 
 	return product, nil
 }
+
+// Delete will remove a Product record from the database
+func (r *ProductRepository) Delete(ctx context.Context, id string) error {
+
+	deleteStmt := `DELETE FROM products WHERE id = $1`
+
+	_, err := r.db.Exec(ctx, deleteStmt, id)
+	if err != nil {
+		return fmt.Errorf("deleting product %q: %w", id, err)
+	}
+
+	return nil
+}
