@@ -1,0 +1,56 @@
+package postgres
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// TxManager is the concrete type implemnts the TxManager interface
+// It access to the postgres database pool and can call the Query,
+// Exec, QueryRow functions within a transaction.
+type TxManager struct {
+	pool *pgxpool.Pool
+}
+
+// NewTxManager will instantiate a new NewTxManager type
+func NewTxManager(pool *pgxpool.Pool) *TxManager {
+	return &TxManager{
+		pool: pool,
+	}
+}
+
+// WithTx
+func (m *TxManager) WithTx(ctx context.Context, fn func(fnCtx context.Context, storeRepo *StoreRepository, productRepo *ProductRepository) error) error {
+
+	// Begins a transaction in Read Commit transaction mode
+	tx, err := m.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+
+	storeRepo := NewStoreRepository(tx)
+	productRepo := NewProductRepository(tx)
+
+	// execute the function with the transaction lock; if fails, we rollback the
+	// transaction
+	if err := fn(ctx, storeRepo, productRepo); err != nil {
+		// Rolls back the transaction
+		if rbErr := tx.Rollback(ctx); rbErr != nil {
+			return fmt.Errorf("rolling back transaction after error: %q: %w", err, rbErr)
+		}
+
+		// this is here just to satisfy the function's signature
+		return err
+	}
+
+	// function succeeded. Commit the transaction
+	// ------------------------------------------
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commiting transaction: %w", err)
+	}
+
+	return nil
+}
