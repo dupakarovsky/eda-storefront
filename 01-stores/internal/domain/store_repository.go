@@ -13,6 +13,8 @@ type StoreRepository interface {
 	// write
 	Save(ctx context.Context, store *Store) error
 	FindByIDForUpdate(ctx context.Context, id string) (*Store, error)
+	WithLock(ctx context.Context, fn func(txCtx context.Context) error) error
+
 	// read
 	FindByID(ctx context.Context, id string) (*Store, error)
 }

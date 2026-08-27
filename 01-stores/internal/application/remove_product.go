@@ -31,27 +31,45 @@ func NewRemoveProduct(productRepo domain.ProductRepository, publisher *foundatio
 // to the stream
 func (uc *RemoveProduct) Execute(ctx context.Context, productID string) error {
 
-	// locate the product in the database
-	product, err := uc.productRepo.FindByIDForUpdate(ctx, productID)
+	// event and store will capture the values returned by the FindByIDForUpdate and RebrandStore
+	// methods
+	var event domain.Event
+	var product *domain.Product
+
+	// WithLock will start a new transaction where the FindByIDForUpdate
+	// method will execute, followed by Delete and Save to presist the
+	// changes to the database.
+	err := uc.productRepo.WithLock(ctx, func(txCtx context.Context) error {
+
+		var err error
+
+		// locate the product in the database
+		product, err = uc.productRepo.FindByIDForUpdate(txCtx, productID)
+		if err != nil {
+			return fmt.Errorf("finding product: %w", err)
+		}
+
+		// product located
+		// ----------------
+
+		// call Remove to receive the event
+		event, err = product.Remove()
+		if err != nil {
+			return fmt.Errorf("removing product: %w", err)
+		}
+
+		// event emited. remove from the repository
+		// ----------------------------------------
+
+		// call Delete to remove the product
+		if err := uc.productRepo.Delete(txCtx, productID); err != nil {
+			return fmt.Errorf("deleting product: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("finding product: %w", err)
-	}
-
-	// product located
-	// ----------------
-
-	// call Remove to receive the event
-	event, err := product.Remove()
-	if err != nil {
-		return fmt.Errorf("removing product: %w", err)
-	}
-
-	// event emited. remove from the repository
-	// ----------------------------------------
-
-	// call Delete to remove the product
-	if err := uc.productRepo.Delete(ctx, productID); err != nil {
-		return fmt.Errorf("deleting product: %w", err)
+		return err
 	}
 
 	// product deleted from database.

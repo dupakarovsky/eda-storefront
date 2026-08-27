@@ -139,6 +139,7 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	rebrandStoreUC := application.NewRebrandStore(storeRepo, publisher, logger)
 	enableStoreParticipationUC := application.NewEnableStoreParticipation(storeRepo, publisher, logger)
 	disableStoreParticipationUC := application.NewDisableStoreParticipation(storeRepo, publisher, logger)
+	//----------------------------------------------------------------------------
 	addProductUC := application.NewAddProduct(productRepo, publisher, logger)
 	rebrandProductUC := application.NewRebrandProduct(productRepo, publisher, logger)
 	increaseProductPriceUC := application.NewIncreaseProductPrice(productRepo, publisher, logger)

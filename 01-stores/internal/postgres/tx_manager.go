@@ -30,6 +30,7 @@ func (m *TxManager) WithTx(ctx context.Context, fn func(fnCtx context.Context, s
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
 
+	// instantiate both repositories with a transacton enabled connection
 	storeRepo := NewStoreRepository(tx)
 	productRepo := NewProductRepository(tx)
 

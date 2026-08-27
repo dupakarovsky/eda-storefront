@@ -31,39 +31,55 @@ func NewRebrandStore(storeRepo domain.StoreRepository, publisher *foundationnats
 // publish the Rebrand event to NATS
 func (uc *RebrandStore) Execute(ctx context.Context, storeId, name string) (*domain.Store, error) {
 
-	// locate the store by it's id in the repository
-	store, err := uc.storeRepo.FindByIDForUpdate(ctx, storeId)
-	if err != nil {
-		switch {
-		// store not found
-		case errors.Is(err, domain.ErrStoreNotFound):
-			return nil, fmt.Errorf("finding store: %w", err)
-			// unexpected error
-		default:
-			uc.logger.Error("unknown error finding store: %w", "error", err)
-			return nil, err
+	// event and store will capture the values returned by the FindByIDForUpdate and RebrandStore
+	// methods
+	var event domain.Event
+	var store *domain.Store
+
+	// WithLock will start a new transaction where the FindByIDForUpdate
+	// method will execute, followed by Rebrand and Save, to presist the
+	// changes to the database.
+	err := uc.storeRepo.WithLock(ctx, func(txCtx context.Context) error {
+		var err error
+
+		// locate the store by it's id in the repository
+		store, err = uc.storeRepo.FindByIDForUpdate(txCtx, storeId)
+		if err != nil {
+			switch {
+			// store not found
+			case errors.Is(err, domain.ErrStoreNotFound):
+				return fmt.Errorf("finding store: %w", err)
+				// unexpected error
+			default:
+				uc.logger.Error("unknown error finding store: %w", "error", err)
+				return err
+			}
 		}
-	}
 
-	// store located. Rebrand the store to emit the event
-	// -------------------------------------------------
+		// store located. Rebrand the store to emit the event
+		// -------------------------------------------------
 
-	// Rebrand the store to emit the event
-	event, err := store.Rebrand(name)
+		// Rebrand the store to emit the event
+		event, err = store.Rebrand(name)
+		if err != nil {
+			return fmt.Errorf("rebrand event: %w", err)
+		}
+
+		// event emited. update the store in the repository
+		// ------------------------------------------------
+
+		// Save will persiste the new name to the database via UPSERT command
+		if err = uc.storeRepo.Save(txCtx, store); err != nil {
+			return fmt.Errorf("saving store: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("rebrand event: %w", err)
+		return nil, err
 	}
 
-	// event emited. update the store in the repository
-	// ------------------------------------------------
-
-	// Save will persiste the new name to the database via UPSERT command
-	if err = uc.storeRepo.Save(ctx, store); err != nil {
-		return nil, fmt.Errorf("saving store: %w", err)
-	}
-
-	// store was updated. Publish the events on NATS
-	// ------------------------------------------------
+	// Transaction successful. Store was updated. Publish the events on NATS
+	// --------------------------------------------------------------------
 
 	//INFO:: If publishDomainEvent fails, the store remains created in the database.
 	//Only the event was not pubslihed. This is a bit unusual, but right now it's what

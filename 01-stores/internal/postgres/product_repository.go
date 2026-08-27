@@ -186,3 +186,36 @@ func (r *ProductRepository) ListByStoreID(ctx context.Context, storeID string) (
 
 	return products, nil
 }
+
+// WithLock will initialialize a transaction and execute the callback function
+// within
+func (r *ProductRepository) WithLock(ctx context.Context, fn func(txCtx context.Context) error) error {
+
+	// initialized the transaction
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+
+	// TODO: define a time for transaction to execute
+	// txCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// defer cancel()
+
+	txCtx := ctx
+
+	// execute the function;
+	if err := fn(txCtx); err != nil {
+		// Rollback transaction if the function returns an error
+		if rbErr := tx.Rollback(txCtx); rbErr != nil {
+			return fmt.Errorf("rolling back transaction after error %q: %w", err, rbErr)
+		}
+		return err
+	}
+
+	// commit the transaction
+	if err := tx.Commit(txCtx); err != nil {
+		return fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return nil
+}

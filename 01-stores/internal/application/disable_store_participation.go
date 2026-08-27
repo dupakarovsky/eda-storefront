@@ -30,26 +30,45 @@ func NewDisableStoreParticipation(storeRepo domain.StoreRepository, publisher *f
 // the event to NATS
 func (uc *DisableStoreParticipation) Execute(ctx context.Context, storeId string) (*domain.Store, error) {
 
-	// locate the store that needs disabling participation
-	store, err := uc.storeRepo.FindByIDForUpdate(ctx, storeId)
+	// event and store will capture the values returned by the FindByIDForUpdate and RebrandStore
+	// methods
+	var event domain.Event
+	var store *domain.Store
+
+	// WithLock will start a new transaction where the FindByIDForUpdate
+	// method will execute, followed by DisableParticipation and Save, to presist the
+	// changes to the database.
+	err := uc.storeRepo.WithLock(ctx, func(txCtx context.Context) error {
+		var err error
+
+		// locate the store that needs disabling participation
+		store, err = uc.storeRepo.FindByIDForUpdate(txCtx, storeId)
+		if err != nil {
+			return fmt.Errorf("finding store: %w", err)
+		}
+
+		// store located. disable the participation.
+		// ---------------------------------------
+
+		// emit the enable particiatpion event
+		event, err = store.DisableParticipation()
+		if err != nil {
+			return fmt.Errorf("disabling participation: %w", err)
+		}
+
+		// update the store to the repository
+		err = uc.storeRepo.Save(txCtx, store)
+		if err != nil {
+			return fmt.Errorf("saving store: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("finding store: %w", err)
+		return nil, err
 	}
 
-	// store located. disable the participation.
-	// ---------------------------------------
-
-	// emit the enable particiatpion event
-	event, err := store.DisableParticipation()
-	if err != nil {
-		return nil, fmt.Errorf("disabling participation: %w", err)
-	}
-
-	// update the store to the repository
-	err = uc.storeRepo.Save(ctx, store)
-	if err != nil {
-		return nil, fmt.Errorf("saving store: %w", err)
-	}
+	// Transaction successful; Publish the event to the broker
 
 	//INFO:: If publishDomainEvent fails, the store remains created in the database.
 	//Only the event was not pubslihed. This is a bit unusual, but right now it's what

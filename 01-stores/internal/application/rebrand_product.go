@@ -30,24 +30,41 @@ func NewRebrandProduct(productRepo domain.ProductRepository, publisher *foundati
 // emit and emit an event to the stream
 func (uc *RebrandProduct) Execute(ctx context.Context, productID, name, description string) (*domain.Product, error) {
 
-	// try to locate the product in the database
-	product, err := uc.productRepo.FindByIDForUpdate(ctx, productID)
+	// event and store will capture the values returned by the FindByIDForUpdate and RebrandStore
+	// methods
+	var event domain.Event
+	var product *domain.Product
+
+	// WithLock will start a new transaction where the FindByIDForUpdate
+	// method will execute, followed by Rebrand and Save, to presist the
+	// changes to the database.
+	err := uc.productRepo.WithLock(ctx, func(txCtx context.Context) error {
+		var err error
+
+		// try to locate the product in the database
+		product, err = uc.productRepo.FindByIDForUpdate(txCtx, productID)
+		if err != nil {
+			return fmt.Errorf("finding product: %w", err)
+		}
+
+		// product found.
+		// ----------------------------------------------
+
+		//call Rebrand to emit the event
+		event, err = product.Rebrand(name, description)
+		if err != nil {
+			return fmt.Errorf("rebranding product: %w", err)
+		}
+
+		// persist changes to the reposiotry
+		if err := uc.productRepo.Save(txCtx, product); err != nil {
+			return fmt.Errorf("saving product: %w", err)
+		}
+
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("finding product: %w", err)
-	}
-
-	// product found.
-	// ----------------------------------------------
-
-	//call Rebrand to emit the event
-	event, err := product.Rebrand(name, description)
-	if err != nil {
-		return nil, fmt.Errorf("rebranding product: %w", err)
-	}
-
-	// persist changes to the reposiotry
-	if err := uc.productRepo.Save(ctx, product); err != nil {
-		return nil, fmt.Errorf("saving product: %w", err)
+		return nil, err
 	}
 
 	// saved, now publish the event to the stream

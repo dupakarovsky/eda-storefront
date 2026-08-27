@@ -16,7 +16,9 @@ type StoreRepository struct {
 
 // NewStoreRepository instantiates a new StoreRepository
 func NewStoreRepository(db Executor) *StoreRepository {
-	return &StoreRepository{db: db}
+	return &StoreRepository{
+		db: db,
+	}
 }
 
 // Save takes in a Store struct and will persist it into a postgres database
@@ -106,4 +108,35 @@ func (r *StoreRepository) FindByIDForUpdate(ctx context.Context, id string) (*do
 	}
 
 	return domain.ReconstituteStore(storeID, name, location, participating), nil
+}
+
+func (r *StoreRepository) WithLock(ctx context.Context, fn func(txCtx context.Context) error) error {
+
+	// initialized the transaction
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+
+	// TODO: define a time for transaction to execute
+	// txCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// defer cancel()
+
+	txCtx := ctx
+
+	// execute the function;
+	if err := fn(txCtx); err != nil {
+		// Rollback transaction if the function returns an error
+		if rbErr := tx.Rollback(txCtx); rbErr != nil {
+			return fmt.Errorf("rolling back transaction after error %q: %w", err, rbErr)
+		}
+		return err
+	}
+
+	// commit the transaction
+	if err := tx.Commit(txCtx); err != nil {
+		return fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return nil
 }

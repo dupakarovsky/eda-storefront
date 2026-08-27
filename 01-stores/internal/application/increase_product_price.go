@@ -31,21 +31,38 @@ func NewIncreaseProductPrice(productRepo domain.ProductRepository, publisher *fo
 // update to the reposiotry and then publish the event to the stream
 func (uc *IncreaseProductPrice) Execute(ctx context.Context, productID string, price float64) (*domain.Product, error) {
 
-	// try to locate the product
-	product, err := uc.productRepo.FindByIDForUpdate(ctx, productID)
-	if err != nil {
-		return nil, fmt.Errorf("finding product: %w", err)
-	}
+	// event and store will capture the values returned by the FindByIDForUpdate and RebrandStore
+	// methods
+	var event domain.Event
+	var product *domain.Product
 
-	// increase the price to receive the event
-	event, err := product.IncreasePrice(price)
-	if err != nil {
-		return nil, fmt.Errorf("increasing product price: %w", err)
-	}
+	// WithLock will start a new transaction where the FindByIDForUpdate
+	// method will execute, followed by IncreasePrice and Save, to presist the
+	// changes to the database.
+	err := uc.productRepo.WithLock(ctx, func(txCtx context.Context) error {
+		var err error
 
-	// persist the changes of the product in the reposiotry
-	if err := uc.productRepo.Save(ctx, product); err != nil {
-		return nil, fmt.Errorf("saving product: %w", err)
+		// try to locate the product
+		product, err = uc.productRepo.FindByIDForUpdate(txCtx, productID)
+		if err != nil {
+			return fmt.Errorf("finding product: %w", err)
+		}
+
+		// increase the price to receive the event
+		event, err = product.IncreasePrice(price)
+		if err != nil {
+			return fmt.Errorf("increasing product price: %w", err)
+		}
+
+		// persist the changes of the product in the reposiotry
+		if err := uc.productRepo.Save(txCtx, product); err != nil {
+			return fmt.Errorf("saving product: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	//INFO:: If publishDomainEvent fails, the product remains updated in the database.
