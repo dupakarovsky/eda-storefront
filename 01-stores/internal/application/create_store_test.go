@@ -10,18 +10,7 @@ import (
 	"github.com/dupakarovsky/eda-storefront/foundation/config"
 	"github.com/dupakarovsky/eda-storefront/foundation/logging"
 	"github.com/dupakarovsky/eda-storefront/stores"
-	"github.com/joho/godotenv"
 )
-
-// loadRealEnv will need to load the .ev
-func loadRealEnv(t *testing.T) {
-	t.Helper()
-
-	//
-	if err := godotenv.Load("../../.env"); err != nil {
-		t.Fatalf("failed to load 01-stores/.env: %v", err)
-	}
-}
 
 // dockerComposeContainer is helper that will stop NATS while the test is running
 func dockerComposeContainer(t *testing.T, action, service string) {

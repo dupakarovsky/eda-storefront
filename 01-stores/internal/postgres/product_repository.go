@@ -22,8 +22,40 @@ func NewProductRepository(db Executor) *ProductRepository {
 	}
 }
 
+// WithLock will initialialize a transaction object and stores it
+// in the context, passing it to the callback function that will be responsible
+// for extracting it if that function needs to be called with in a transaction.
+func (r *ProductRepository) WithLock(ctx context.Context, fn func(txCtx context.Context) error) error {
+
+	// initialized the transaction
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+
+	// create a derived context with a txKey inside
+	txCtx := ctxWithTx(ctx, tx)
+
+	// execute the function;
+	if err := fn(txCtx); err != nil {
+		// Rollback transaction if the function returns an error
+		if rbErr := tx.Rollback(txCtx); rbErr != nil {
+			return fmt.Errorf("rolling back transaction after error %q: %w", err, rbErr)
+		}
+		return err
+	}
+
+	// commit the transaction
+	if err := tx.Commit(txCtx); err != nil {
+		return fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return nil
+}
+
 // Save takes in a Store struct and will persist it into a postgres database
 func (r *ProductRepository) Save(ctx context.Context, product *domain.Product) error {
+
 	//  insert query
 	insertStmt := `
 	INSERT INTO products (id, store_id, name, description, sku, price, updated_at)
@@ -36,8 +68,11 @@ func (r *ProductRepository) Save(ctx context.Context, product *domain.Product) e
 		updated_at = now()
 	`
 
+	// try to extract the transaction from the context.
+	exec := executorFrom(ctx, r.db)
+
 	// execute the statement passsing the Product's fields to statement
-	_, err := r.db.Exec(ctx, insertStmt, product.ID, product.StoreID, product.Name, product.Description, product.SKU, product.Price)
+	_, err := exec.Exec(ctx, insertStmt, product.ID, product.StoreID, product.Name, product.Description, product.SKU, product.Price)
 	if err != nil {
 		return fmt.Errorf("saving product %q: %W", product.ID, err)
 	}
@@ -50,7 +85,7 @@ func (r *ProductRepository) Save(ctx context.Context, product *domain.Product) e
 func (r *ProductRepository) FindByID(ctx context.Context, id string) (*domain.Product, error) {
 
 	//  select for upate statement
-	selectForUpdateStmt := `
+	selectStmt := `
 	SELECT id, store_id, name, description, sku, price 
 	FROM products WHERE id = $1 
 	`
@@ -65,8 +100,11 @@ func (r *ProductRepository) FindByID(ctx context.Context, id string) (*domain.Pr
 		price       float64 // pgx converts NUMERIC to float64 natively
 	)
 
+	// try to extract the transaction from the context.
+	exec := executorFrom(ctx, r.db)
+
 	// execute the query and record the column values into the variables
-	err := r.db.QueryRow(ctx, selectForUpdateStmt, id).Scan(&productID, &storeID, &name, &description, &sku, &price)
+	err := exec.QueryRow(ctx, selectStmt, id).Scan(&productID, &storeID, &name, &description, &sku, &price)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -102,8 +140,11 @@ func (r *ProductRepository) FindByIDForUpdate(ctx context.Context, id string) (*
 		price       float64 // pgx converts NUMERIC to float64 natively
 	)
 
+	// try to extract the transaction from the context.
+	exec := executorFrom(ctx, r.db)
+
 	// execute the query and record the column values into the variables
-	err := r.db.QueryRow(ctx, selectForUpdateStmt, id).Scan(&productID, &storeID, &name, &description, &sku, &price)
+	err := exec.QueryRow(ctx, selectForUpdateStmt, id).Scan(&productID, &storeID, &name, &description, &sku, &price)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -124,7 +165,10 @@ func (r *ProductRepository) Delete(ctx context.Context, id string) error {
 
 	deleteStmt := `DELETE FROM products WHERE id = $1`
 
-	_, err := r.db.Exec(ctx, deleteStmt, id)
+	// try to extract the transaction from the context.
+	exec := executorFrom(ctx, r.db)
+
+	_, err := exec.Exec(ctx, deleteStmt, id)
 	if err != nil {
 		return fmt.Errorf("deleting product %q: %w", id, err)
 	}
@@ -142,8 +186,11 @@ func (r *ProductRepository) ListByStoreID(ctx context.Context, storeID string) (
 	WHERE store_id = $1
 	`
 
+	// try to extract the transaction from the context.
+	exec := executorFrom(ctx, r.db)
+
 	// execute the query to receive the iterator
-	rows, err := r.db.Query(ctx, selectStmt, storeID)
+	rows, err := exec.Query(ctx, selectStmt, storeID)
 	if err != nil {
 		return nil, fmt.Errorf("listing products for store %q: %w", storeID, err)
 	}
@@ -185,37 +232,4 @@ func (r *ProductRepository) ListByStoreID(ctx context.Context, storeID string) (
 	}
 
 	return products, nil
-}
-
-// WithLock will initialialize a transaction and execute the callback function
-// within
-func (r *ProductRepository) WithLock(ctx context.Context, fn func(txCtx context.Context) error) error {
-
-	// initialized the transaction
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
-	}
-
-	// TODO: define a time for transaction to execute
-	// txCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	// defer cancel()
-
-	txCtx := ctx
-
-	// execute the function;
-	if err := fn(txCtx); err != nil {
-		// Rollback transaction if the function returns an error
-		if rbErr := tx.Rollback(txCtx); rbErr != nil {
-			return fmt.Errorf("rolling back transaction after error %q: %w", err, rbErr)
-		}
-		return err
-	}
-
-	// commit the transaction
-	if err := tx.Commit(txCtx); err != nil {
-		return fmt.Errorf("committing transaction: %w", err)
-	}
-
-	return nil
 }

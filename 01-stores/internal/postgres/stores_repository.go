@@ -21,6 +21,37 @@ func NewStoreRepository(db Executor) *StoreRepository {
 	}
 }
 
+// WithLock will initialialize a transaction object and stores it
+// in the context, passing it to the callback function that will be responsible
+// for extracting it if that function needs to be called with in a transaction.
+func (r *StoreRepository) WithLock(ctx context.Context, fn func(txCtx context.Context) error) error {
+
+	// initialized the transaction
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+
+	// create a derived context with a txKey inside
+	txCtx := ctxWithTx(ctx, tx)
+
+	// execute the function;
+	if err := fn(txCtx); err != nil {
+		// Rollback transaction if the function returns an error
+		if rbErr := tx.Rollback(txCtx); rbErr != nil {
+			return fmt.Errorf("rolling back transaction after error %q: %w", err, rbErr)
+		}
+		return err
+	}
+
+	// commit the transaction
+	if err := tx.Commit(txCtx); err != nil {
+		return fmt.Errorf("committing transaction: %w", err)
+	}
+
+	return nil
+}
+
 // Save takes in a Store struct and will persist it into a postgres database
 func (r *StoreRepository) Save(ctx context.Context, store *domain.Store) error {
 
@@ -34,8 +65,13 @@ func (r *StoreRepository) Save(ctx context.Context, store *domain.Store) error {
 		participating = EXCLUDED.participating,
 		updated_at = now()
 	`
+
+	// verify if the context has a transaction object inside; if it does
+	// used it instead of the plain db
+	exec := executorFrom(ctx, r.db)
+
 	// execute the statemnt using the store fields to persist into the database
-	_, err := r.db.Exec(ctx, insertStmt, store.ID, store.Name, store.Location, store.Participating)
+	_, err := exec.Exec(ctx, insertStmt, store.ID, store.Name, store.Location, store.Participating)
 	if err != nil {
 		return fmt.Errorf("saving store %q: %w", store.ID, err)
 	}
@@ -62,8 +98,12 @@ func (r *StoreRepository) FindByID(ctx context.Context, id string) (*domain.Stor
 		participating bool
 	)
 
+	// verify if the context has a transaction object inside; if it does
+	// used it instead of the plain db
+	exec := executorFrom(ctx, r.db)
+
 	// execute the QueryRow and store the values into the variables
-	err := r.db.QueryRow(ctx, selectStmt, id).Scan(&storeID, &name, &location, &participating)
+	err := exec.QueryRow(ctx, selectStmt, id).Scan(&storeID, &name, &location, &participating)
 	if err != nil {
 		switch {
 		// No records found
@@ -97,7 +137,11 @@ func (r *StoreRepository) FindByIDForUpdate(ctx context.Context, id string) (*do
 		participating bool
 	)
 
-	err := r.db.QueryRow(ctx, selectForUpdateStmt, id).Scan(&storeID, &name, &location, &participating)
+	// verify if the context has a transaction object inside; if it does
+	// used it instead of the plain db
+	exec := executorFrom(ctx, r.db)
+
+	err := exec.QueryRow(ctx, selectForUpdateStmt, id).Scan(&storeID, &name, &location, &participating)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -108,35 +152,4 @@ func (r *StoreRepository) FindByIDForUpdate(ctx context.Context, id string) (*do
 	}
 
 	return domain.ReconstituteStore(storeID, name, location, participating), nil
-}
-
-func (r *StoreRepository) WithLock(ctx context.Context, fn func(txCtx context.Context) error) error {
-
-	// initialized the transaction
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
-	}
-
-	// TODO: define a time for transaction to execute
-	// txCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	// defer cancel()
-
-	txCtx := ctx
-
-	// execute the function;
-	if err := fn(txCtx); err != nil {
-		// Rollback transaction if the function returns an error
-		if rbErr := tx.Rollback(txCtx); rbErr != nil {
-			return fmt.Errorf("rolling back transaction after error %q: %w", err, rbErr)
-		}
-		return err
-	}
-
-	// commit the transaction
-	if err := tx.Commit(txCtx); err != nil {
-		return fmt.Errorf("committing transaction: %w", err)
-	}
-
-	return nil
 }

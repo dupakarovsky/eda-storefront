@@ -2151,3 +2151,155 @@ know why it mattered.
 Same run pattern as before —
 `go test -v ./internal/application/ -run=<TestName>` one at a time, real
 Postgres/NATS up. Let me know what comes back.
+
+### Step 7 WithLock
+
+Good, and this surfaces something that needs to be resolved before we write
+another line of handler code: as written, `WithLock` doesn't actually make the
+lock live. This isn't a nitpick — it's the exact bug `journey_progress.md`
+already named ("row-locking wired but dormant") resurfacing in the new version,
+and it's worth understanding precisely why before choosing between the two
+patterns.
+
+**The bug.** `WithLock` calls `r.db.Begin(ctx)` to get a real `pgx.Tx` — but
+then it does `txCtx := ctx` (no wrapping) and calls `fn(txCtx)`. Inside the
+closure, `rebrand_store.go` calls
+`uc.storeRepo.FindByIDForUpdate(txCtx, storeId)` — but `uc.storeRepo` is the
+_original_ `StoreRepository`, constructed back in `module.go` against the bare
+`pool`, not against `tx`. Passing `txCtx` doesn't change which `Executor` the
+repository method uses internally — that was fixed at construction time, long
+before this call. So `FindByIDForUpdate` and `Save` both run as their own
+separate implicit single-statement transactions against the pool, exactly as
+before. The `tx` variable `WithLock` created is never queried against at all —
+it just sits there until `Commit`/`Rollback` closes it out, having locked and
+unlocked nothing meaningful in between. This is precisely why Phase 2 called the
+row-locking "dormant": the shape looked right, but nothing was ever plumbed
+through to make the lock a lock.
+
+**Two ways to actually fix it**, both real options:
+
+**Option 1 — context-based executor lookup.** Keep `WithLock`'s signature
+exactly as you have it (`func(txCtx context.Context) error`), but make it _do_
+something: store the `tx` in the context, and change every repository method to
+check the context for a tx first, falling back to `r.db` if none is present.
+
+```go
+// 01-stores/internal/postgres/txcontext.go
+```
+
+`WithLock` then does `ctx = withTx(ctx, tx)` before calling `fn`, and every
+repository method (`FindByID`, `FindByIDForUpdate`, `Save`, `Delete`,
+`ListByStoreID` — all of them, not just the ones used inside a lock) swaps its
+internal `r.db.Query(...)` for `executorFrom(ctx, r.db).Query(...)`. This
+preserves every call site exactly as you've already written them across the
+seven handlers — genuinely zero changes needed to `rebrand_store.go` and its
+siblings beyond what you've already done. The cost is that "which executor
+actually runs this query" becomes something decided implicitly by whether a `tx`
+happens to be stashed in the context, rather than something visible in the
+function signature — a real, if common, pattern (Go's own `database/sql`
+ecosystem uses this shape constantly), but it means a future reader has to know
+to look for it.
+
+**Option 2 — my original proposal** (`domain.TxManager.WithTx` handing back
+tx-scoped repository instances as function arguments). This makes the
+tx-boundedness explicit and impossible to get wrong by omission — you can't
+accidentally call the non-tx repo inside the closure, because the closure is
+never given one — at the cost of every one of the seven handlers needing the
+callback signature change from `func(txCtx context.Context) error` to
+`func(ctx context.Context, storeRepo domain.StoreRepository, productRepo domain.ProductRepository) error`,
+which is more rewriting than you've already done.
+
+I'd lean toward **Option 1** at this point, specifically because you've already
+hand-written all seven call sites against the `WithLock(ctx, func(txCtx) error)`
+shape and they're correct as written — the only thing wrong is one layer down,
+inside `WithLock` and the repository constructors. Fixing it there means the
+work you've already done stands. But it's a real trade-off (explicit-and-verbose
+vs. implicit-and-concise), and either is defensible — your call.
+
+**On the timeout question** — worth checking something before deciding:
+`foundation/http`'s `TimeoutMiddleware(cfg.Server.RequestTimeout)` already wraps
+_every_ HTTP request in a context deadline (`SRV_REQUEST_TIMEOUT`, defaulting to
+`3s` per `config.go`), applied before the request ever reaches a Connect
+handler. That answers your store-manager question more cleanly than a
+hand-picked number would: the clock only starts once "Save" is actually clicked
+and the request hits the server — not from when the manager opens the form and
+starts typing — so a fixed 3-second budget for "load the row, apply the change,
+write it back" is a request-processing bound, not a think-time bound, and
+doesn't need a separate timer bolted onto `WithLock` specifically. I'd suggest
+**not** adding a second, independent timeout inside `WithLock` — let the
+transaction inherit whatever deadline the incoming request context already
+carries, the same way every other DB call in this codebase already does.
+
+That said, checking this raised something worth flagging rather than fixing
+right now: that same `3s` deadline wraps the _entire_ handler chain, including
+the `publishDomainEvent`/`publishWithRetry` call that happens after `WithLock`
+returns. ADL 0007's retry budget is a real, tested ~10.5-second worst case — but
+if the request arrived through the actual HTTP/Connect layer rather than being
+called directly the way `create_store_test.go` does
+(`ctx := context.Background()`, no deadline at all), that 10.5-second retry
+budget would never get to run its full course — the 3-second request timeout
+would cancel it first, well before even the second retry's backoff completes.
+That's a real gap between what Phase 3 tested and what production traffic would
+actually experience, and it's been sitting there unnoticed since the API layer
+didn't exist yet when that test was written. Worth its own deliberate look later
+— possibly alongside whichever of these two `WithLock` fixes we land on — but
+not something to solve in the middle of this Step.
+
+Which of the two `WithLock` fixes would you like to go with?
+
+#### Test with concurrency
+
+Good moment to explain the test design before the code, since a naive
+concurrency test can accidentally prove nothing: if both goroutines just ran the
+same operation and we only checked the final DB state was correct, that would
+pass whether the lock is real or not — a single unlucky interleaving in either
+direction still produces a valid final `UPDATE`. The only way to actually
+distinguish "a lock was held" from "no lock exists" is to measure _time_: have
+one goroutine hold the transaction open for a known duration, and prove the
+second goroutine's `FindByIDForUpdate` genuinely blocks for at least that long
+before it can proceed — that's a property only a real Postgres row lock
+produces.
+
+The synchronization needs to be exact, not sleep-based guessing on both sides —
+a `time.Sleep(100ms)` in goroutine B "to let A go first" would be racy and could
+occasionally fire before A's `FOR UPDATE` actually lands. Using a channel that A
+closes the instant its own `FindByIDForUpdate` returns (i.e., the exact moment
+Postgres has granted the lock) makes the ordering deterministic regardless of
+scheduler timing.
+
+I'm adding this to `rebrand_store_test.go`, since it exercises the exact same
+`WithLock`/`FindByIDForUpdate`/`Save` path `RebrandStore.Execute` itself uses —
+this test isn't about rebranding specifically, it's proving the underlying lock
+mechanism the handler depends on is real, but it belongs alongside the handler
+that relies on it.
+
+```go
+// 01-stores/internal/application/rebrand_store_test.go
+```
+
+```go
+// 01-stores/internal/application/rebrand_store_test.go
+```
+
+A couple of things worth understanding about why this works, beyond just "it
+compiles":
+
+Goroutine B's `WithLock` call doesn't start until `lockAcquired` is closed —
+guaranteed to be _after_ A's row lock is genuinely held by Postgres, not just
+after A's goroutine happened to get scheduled. B's own `FindByIDForUpdate` then
+has to physically wait at the database level for A's transaction to commit or
+roll back — this is Postgres itself blocking the query, not any coordination on
+the Go side. `waitedFor` is measured from immediately before B's `WithLock` call
+to the moment its `FindByIDForUpdate` returns, so it captures exactly the
+blocked time, nothing else. The assertion `waitedFor < holdDuration` failing
+would mean B got through _before_ A could have possibly released the lock —
+which is only possible if the lock never existed in the first place.
+
+One thing to know before you run it: this test takes a real ~300ms (the
+`holdDuration`) to complete, unlike every prior test in this suite which
+finished in the 10–100ms range — that's expected and fine, it's proving
+something none of the others could.
+
+Run it the same way as always —
+`go test -v ./internal/application/ -run=^TestStoreRepository_WithLock_SerializesConcurrentAccess`
+— and let me know what comes back.

@@ -8,9 +8,20 @@ import (
 	"github.com/dupakarovsky/eda-storefront/foundation/config"
 	"github.com/dupakarovsky/eda-storefront/foundation/logging"
 	"github.com/dupakarovsky/eda-storefront/stores"
+	"github.com/joho/godotenv"
 )
 
 const ApplicationTest string = "application_test.log"
+
+// loadRealEnv will need to load the .ev
+func loadRealEnv(t *testing.T) {
+	t.Helper()
+
+	//
+	if err := godotenv.Load("../../.env"); err != nil {
+		t.Fatalf("failed to load 01-stores/.env: %v", err)
+	}
+}
 
 func newTestModule(logFileName string, t *testing.T) *stores.Module {
 	t.Helper()

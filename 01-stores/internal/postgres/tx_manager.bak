@@ -21,7 +21,8 @@ func NewTxManager(pool *pgxpool.Pool) *TxManager {
 	}
 }
 
-// WithTx
+// WithTx will need to instantiate new repositories (for the Store and Product)
+// that have methoeds called with a transaction pool.
 func (m *TxManager) WithTx(ctx context.Context, fn func(fnCtx context.Context, storeRepo *StoreRepository, productRepo *ProductRepository) error) error {
 
 	// Begins a transaction in Read Commit transaction mode

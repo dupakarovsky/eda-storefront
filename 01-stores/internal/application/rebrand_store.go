@@ -42,6 +42,8 @@ func (uc *RebrandStore) Execute(ctx context.Context, storeId, name string) (*dom
 	err := uc.storeRepo.WithLock(ctx, func(txCtx context.Context) error {
 		var err error
 
+		// extract the transaction
+
 		// locate the store by it's id in the repository
 		store, err = uc.storeRepo.FindByIDForUpdate(txCtx, storeId)
 		if err != nil {
