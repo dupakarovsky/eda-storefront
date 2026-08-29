@@ -91,5 +91,16 @@ func (s *Server) DisableStoreParticipation(ctx context.Context, req *connect.Req
 }
 
 func (s *Server) GetStore(ctx context.Context, req *connect.Request[storespb.GetStoreRequest]) (*connect.Response[storespb.GetStoreResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+	// call the GetStore use case
+	store, err := s.getStoreUC.Execute(ctx, req.Msg.StoreId)
+	if err != nil {
+		return nil, mapError(err)
+	}
+
+	// generate a response to the caller
+	response := connect.NewResponse(&storespb.GetStoreResponse{
+		Store: toProtoStore(store),
+	})
+
+	return response, nil
 }

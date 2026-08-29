@@ -24,10 +24,10 @@ type ServerConfig struct {
 	Host              string        `envconfig:"SRV_HOST" default:""`
 	Port              string        `envconfig:"SRV_PORT" default:"8080"`
 	ReadHeaderTimeout time.Duration `envconfig:"SRV_READ_HEADER_TIMEOUT" default:"5s"`
-	WriteTimeout      time.Duration `envconfig:"SRV_WRITE_TIMEOUT" default:"10s"`
+	WriteTimeout      time.Duration `envconfig:"SRV_WRITE_TIMEOUT" default:"13s"`
 	IdleTimeout       time.Duration `envconfig:"SRV_IDLE_TIMEOUT" default:"120s"`
 	ShutdownTimeout   time.Duration `envconfig:"SRV_SHUTDOWN_TIMEOUT" default:"10s"`
-	RequestTimeout    time.Duration `envconfig:"SRV_REQUEST_TIMEOUT" default:"3s"`
+	RequestTimeout    time.Duration `envconfig:"SRV_REQUEST_TIMEOUT" default:"12s"`
 }
 
 // Logger config defines configuration params for the log's level in the terminal

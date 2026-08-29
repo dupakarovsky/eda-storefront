@@ -2303,3 +2303,145 @@ something none of the others could.
 Run it the same way as always —
 `go test -v ./internal/application/ -run=^TestStoreRepository_WithLock_SerializesConcurrentAccess`
 — and let me know what comes back.
+
+### Step 8 - End to End Verification
+
+All eleven RPCs are proven end-to-end now — this is the first time every one of
+them has gone through the real HTTP/Connect layer rather than being called
+directly from a Go test, and the server log confirms every call landed on the
+exact `/stores.v1.StoresService/<Method>` path with the right status code,
+including the two deliberate failures returning `404`/`400` as designed.
+
+One small wire-format nuance worth naming, since it's not quite what I said to
+expect: `ListProducts` after removal came back as `{}`, not `{"products": []}`.
+That's not a bug, and it's not really the null-vs-empty-slice distinction I
+flagged back in Step 6 — it's a separate protobuf JSON behavior. `protojson`'s
+default marshaler omits _any_ field left at its zero value, and for a `repeated`
+field, an empty slice **is** the zero value — same category as
+`participating: false` disappearing from the very first `CreateStore` response
+back in Step 3. So the Go-level guarantee we actually tested (Step 6's
+`products == nil` check, run against the repository/use-case return value
+directly) is real and correct, but it's invisible at the wire level specifically
+because it's empty — the field would only appear as `[]` in JSON if you
+explicitly configured `protojson.MarshalOptions{EmitUnpopulated: true}` on the
+server, which nothing here does. Worth knowing so a client author doesn't
+mistake "field absent" for "field unsupported."
+
+**Part 2 — the deferred timeout/retry conflict.** This is worth resolving with
+actual numbers before we close the phase, and the log you just posted gives away
+why: every one of those eleven calls completed in low single-digit milliseconds,
+meaning we've never yet exercised what happens when `publishWithRetry` actually
+needs its full budget on a _real_ HTTP request — Step 3's original NATS-outage
+test called `mod.CreateStoreUC.Execute` directly with `context.Background()`,
+which has no deadline at all, so it never encountered this.
+
+Here's the concrete conflict: `foundation/http`'s
+`TimeoutMiddleware(cfg.Server.RequestTimeout)` wraps every request in a context
+deadline — currently `3s` (`config.go`'s `SRV_REQUEST_TIMEOUT` default) —
+applied as _global_ middleware in `router.Use(...)` in `main.go`, meaning it
+wraps the entire mux, including the Connect service mount, with no way for a
+single RPC to opt out (per-route middleware in `foundation`'s `Router` layers
+_inside_ the global stack, not around it — the global 3s deadline always wins
+regardless). ADL 0007's retry budget is a real, measured ~10.5s worst case. If a
+`CreateStore` (or any command) call ever hit a genuine NATS outage while running
+through the real HTTP path, the context would be cancelled by the global timeout
+around the 3-second mark — well before even the second retry's backoff completes
+— and `publishWithRetry`'s per-attempt `context.WithTimeout(ctx, ...)` would
+inherit an already-doomed parent, likely failing the very first attempt's
+context check rather than getting the fair five-attempt shot ADL 0007 actually
+tested and documented.
+
+There's a second, independent ceiling worth naming too: `main.go`'s
+`http.Server{WriteTimeout: cfg.Server.WriteTimeout}` (currently `10s`) bounds
+how long the server has to write a response at all, regardless of context
+cancellation — even if we fixed the context deadline, a request legitimately
+taking the full 10.5s would still get its connection forcibly cut by
+`WriteTimeout` before the response could be written.
+
+The fix I'd propose: raise both `SRV_REQUEST_TIMEOUT` and `SRV_WRITE_TIMEOUT`
+comfortably past the measured ~10.5s worst case — say `12s` and `13s`
+respectively — so a command handler that genuinely needs its full retry budget
+can actually get it when called for real. `SRV_READ_HEADER_TIMEOUT` (`5s`) is
+unrelated and stays as-is; it only bounds reading request headers, not handler
+execution.
+
+The honest trade-off: this is a single _global_ timeout, and `foundation`'s
+`Router` doesn't currently support per-route deadlines without either wrapping
+the whole Connect service mount in custom logic or reaching for a
+Connect-specific interceptor (a real mechanism ConnectRPC offers for exactly
+this — per-procedure behavior — but it's new territory this project hasn't
+touched, and would be a legitimate but nontrivial addition). That means
+`GetStore`/`ListProducts` — pure reads that should fail fast if Postgres hangs —
+would inherit the same 12-second worst-case ceiling as a command surviving a
+NATS outage, even though nothing about a read needs anywhere near that long. I'd
+rather flag that explicitly and accept it for now (matching the same "correct
+but not maximally elegant, revisit if it becomes a real problem" discipline ADL
+0007 itself used for the outbox deferral) than half-solve it with a bespoke
+per-route timeout scheme in the middle of closing out Phase 4.
+
+Want me to make the `12s`/`13s` change on that basis, or would you rather scope
+a proper per-procedure timeout (Connect interceptor) as its own follow-up item
+instead of touching the global values at all right now?
+
+#### Connect Interceptors
+
+Yes — Connect interceptors are deliberately modeled on the same concept as
+gRPC's unary/stream interceptors, and if you've used
+`grpc.UnaryServerInterceptor` before, the shape will feel immediately familiar:
+a function that wraps a call, runs code before/after invoking the next handler
+in the chain, and can short-circuit by returning early instead of calling
+through. A few differences worth knowing before you'd reach for one:
+
+Connect uses a single `connect.Interceptor` interface with
+`WrapUnary`/`WrapStreamingClient`/`WrapStreamingHandler` methods, rather than
+gRPC's separate unary-vs-streaming interceptor types — one interceptor value can
+cover both shapes, though a unary-only service like `StoresService` would only
+ever exercise `WrapUnary`. They're registered via
+`connect.WithInterceptors(...)` passed as an option into the generated
+`NewStoresServiceHandler` call (or globally across every handler via
+`connect.WithOptions` at the mux level), rather than gRPC's
+`grpc.ChainUnaryInterceptor` server option — different call site, same chaining
+idea. And critically for the timeout question specifically: a `WrapUnary`
+interceptor receives the `connect.AnyRequest`, which carries the _procedure
+name_ (`req.Spec().Procedure`) — meaning an interceptor genuinely could branch
+on "is this `CreateStore`, apply a long deadline; is this `GetStore`, apply a
+short one" in one place, which is exactly the per-procedure mechanism
+`foundation`'s current global-middleware-only `Router` doesn't have a way to
+express. That's the real reason it'd be the right tool if you ever do want to
+split the timeouts apart later — worth keeping in mind as a concrete option, not
+just a vague "ConnectRPC probably supports this somehow."
+
+For now, the global change — two values in `.env` (or your shell environment,
+wherever `SRV_REQUEST_TIMEOUT`/`SRV_WRITE_TIMEOUT` are currently set):
+
+```
+SRV_REQUEST_TIMEOUT=12s
+SRV_WRITE_TIMEOUT=13s
+```
+
+If they're not already overridden in your `.env` and are just relying on
+`config.go`'s struct defaults, update the defaults directly instead:
+
+```go
+// 01-stores/foundation/config/config.go
+	WriteTimeout      time.Duration `envconfig:"SRV_WRITE_TIMEOUT" default:"13s"`
+```
+
+```go
+// 01-stores/foundation/config/config.go
+	RequestTimeout    time.Duration `envconfig:"SRV_REQUEST_TIMEOUT" default:"12s"`
+```
+
+Worth flagging since `config.go` lives in `foundation`, not `01-stores`: this
+changes a default every current and future service built on `foundation`
+inherits, not just `stores` — reasonable here since the ~10.5s retry budget is
+itself a `foundation/nats`-adjacent concern (`publishWithRetry` lives in
+`01-stores/internal/application`, but the pattern's explicitly slated per ADL
+0007 for promotion into `foundation/nats` if `depot`/`baskets` need it
+unchanged), but worth being deliberate about rather than surprised by later.
+
+Once that's updated, restart the service (env/default changes need a fresh
+process, not just a rebuild) and we can move to the docs —
+`journey_progress.md`'s Phase 4 entry and `CONTRACT.md`. Let me know when you've
+made the change and restarted, or if you'd rather I draft both doc updates now
+while that's in progress.
