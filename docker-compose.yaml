@@ -5,6 +5,13 @@ services:
         restart: unless-stopped
         env_file:
             - ./.postgres.env
+        # guarantees that the Postgres container has started and
+        # has finished initializing (ready to accept connections)
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U edasuper -d edadb']
+            interval: 5s
+            timeout: 3s
+            retries: 5
         ports:
             - 127.0.0.1:5433:5432
         volumes:
@@ -24,11 +31,56 @@ services:
         # sets the JetStream store directory inside the container.
         # this has to match the volume's mount target : /data
         command: '--jetstream --http_port 8222 --store_dir /data'
+
+        # guarantees that the NATS container has started and
+        # has finished initializing (ready to accept connections)
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'wget',
+                    '--spider',
+                    '-q',
+                    'http://localhost:8222/healthz',
+                ]
+            interval: 5s
+            timeout: 3s
+            retries: 5
+
         ports:
             - 127.0.0.1:4223:4222
             - 127.0.0.1:8222:8222
         volumes:
             - nats-data:/data
+        networks:
+            - eda-net
+
+    stores:
+        build:
+            context: .
+            dockerfile: 01-stores/Dockerfile
+        container_name: eda-stores
+        restart: unless-stopped
+        env_file:
+            - ./01-stores/.env
+        # override these values from env_file. These values will
+        # be applied for the docker container (the .env files have
+        # the values for the operating in the local environment)
+        environment:
+            DB_HOST: 'postgres'
+            DB_PORT: '5432'
+            NATS_URL: nats://nats:4222
+            # overrides the foundationlogging default path so it doesn't
+            # create a .log file. Instead,we realy on docker compose logs stores
+            # for retriving this container's logs
+            LOG_FILE_PATH: ''
+        depends_on:
+            postgres:
+                condition: service_healthy
+            nats:
+                condition: service_healthy
+        ports:
+            - 127.0.0.1:8080:8080
         networks:
             - eda-net
 

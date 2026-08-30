@@ -33,8 +33,9 @@ type ServerConfig struct {
 // Logger config defines configuration params for the log's level in the terminal
 // and in the .log file
 type LoggerConfig struct {
-	TermLevel string `envconfig:"LOG_TERM_LEVEL" default:"debug"`
+	FilePath  string `envconfig:"LOG_FILE_PATH" default:"stores.log"`
 	FileLevel string `envconfig:"LOG_FILE_LEVEL" default:"info"`
+	TermLevel string `envconfig:"LOG_TERM_LEVEL" default:"debug"`
 }
 
 // DBConfig defines configuration paramters for the postgres database

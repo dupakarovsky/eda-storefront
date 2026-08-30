@@ -2445,3 +2445,190 @@ process, not just a rebuild) and we can move to the docs —
 `journey_progress.md`'s Phase 4 entry and `CONTRACT.md`. Let me know when you've
 made the change and restarted, or if you'd rather I draft both doc updates now
 while that's in progress.
+
+#### Step 9 Makefile and Docker file for 01-stores
+
+Good — with both files in hand, here's what Step 9 actually needs: a Dockerfile
+for `stores` (there isn't one yet — `stores-run`'s Makefile target builds and
+runs the binary directly on the host, which is exactly the gap the roadmap's "no
+stubbing" agreement is about), a new service block in `docker-compose.yml`, and
+a couple of `Makefile` adjustments. One thing surfaces while building this
+that's worth deciding along the way, so I'll flag it inline rather than silently
+deciding it.
+
+**The Dockerfile.** One thing makes this simpler than it might look:
+`01-stores/go.mod`'s `replace` directive (from the earlier `go mod tidy` fix)
+already points at `../foundation` by relative path — since that's a property of
+`go.mod` itself, not `go.work`, the container build never needs `go.work` at
+all, just the same relative directory layout preserved inside the image.
+
+```dockerfile
+# 01-stores/Dockerfile
+FROM golang:1.25 AS builder
+
+WORKDIR /workspace
+
+COPY foundation/ ./foundation/
+COPY 01-stores/ ./01-stores/
+
+WORKDIR /workspace/01-stores
+
+RUN go mod download
+RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/stores ./cmd/service
+
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+COPY --from=builder /bin/stores ./stores
+
+EXPOSE 8080
+
+ENTRYPOINT ["./stores"]
+```
+
+Standard two-stage pattern — `golang:1.25` compiles a static binary
+(`CGO_ENABLED=0`, matching `pgx/v5`'s pure-Go driver, no C dependencies to worry
+about), `alpine:3.20` runs it, keeping the final image small since the Go
+toolchain itself never ships. `ca-certificates` is included defensively for any
+future TLS connection, even though nothing here uses one yet.
+
+One real gap worth naming, not silently working around: `logging.go`'s `New()`
+writes to a hardcoded relative path (`"stores.log"`, passed from `main.go`),
+which inside the container means `/app/stores.log` — written to the container's
+own writable layer, gone the moment the container is removed (not just stopped —
+`restart`/`stop`/`start` would preserve it, but any
+`docker compose down`/rebuild wouldn't). `foundation`'s Postgres/NATS containers
+both get real named volumes for their data specifically to survive that; the log
+file currently doesn't have an equivalent. I'd treat this as a known, named gap
+rather than solve it in this Step — worth either a volume mount or, more likely,
+eventually routing structured logs to stdout instead of a file (which is the
+more idiomatic container pattern anyway, letting `docker compose logs stores` be
+the log viewer rather than a file you'd need to `exec` in to read). Flagging it
+for `system-state.md`/a future ADL rather than fixing it now.
+
+**`docker-compose.yml`.** New `stores` service block, plus `healthcheck` entries
+added to the _existing_ `postgres`/`nats` blocks — this second part is the thing
+worth deciding on. Without it, `stores`' `depends_on` only guarantees
+Postgres/NATS _containers have started_, not that Postgres has finished
+initializing or NATS is accepting connections yet — and `module.go`'s `New()`
+has no retry on that initial connection (a failed `pool.Ping`/NATS connect just
+exits `1` immediately). Since `03-stores-db.sh`'s role/database provisioning
+runs as part of Postgres's own first-boot init sequence, there's a real window
+where the container is "up" but not yet ready. Healthchecks close that gap by
+making `depends_on: condition: service_healthy` actually wait for readiness, not
+just process start.
+
+```yaml
+# docker-compose.yml
+postgres:
+    image: postgres:17
+    container_name: eda-postgres
+    restart: unless-stopped
+    env_file:
+        - ./.postgres.env
+    healthcheck:
+        test: ['CMD-SHELL', 'pg_isready -U edasuper -d edadb']
+        interval: 5s
+        timeout: 3s
+        retries: 5
+```
+
+```yaml
+# docker-compose.yml
+nats:
+    image: nats:2.12
+    container_name: eda-nats
+    restart: unless-stopped
+    command: '--jetstream --http_port 8222 --store_dir /data'
+    healthcheck:
+        test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:8222/healthz']
+        interval: 5s
+        timeout: 3s
+        retries: 5
+```
+
+```yaml
+# docker-compose.yml
+stores:
+    build:
+        context: .
+        dockerfile: 01-stores/Dockerfile
+    container_name: eda-stores
+    restart: unless-stopped
+    env_file:
+        - ./01-stores/.env
+    environment:
+        DB_HOST: postgres
+        DB_PORT: '5432'
+        NATS_URL: nats://nats:4222
+    depends_on:
+        postgres:
+            condition: service_healthy
+        nats:
+            condition: service_healthy
+    ports:
+        - 127.0.0.1:8080:8080
+    networks:
+        - eda-net
+```
+
+The `environment:` block is deliberate, not redundant with `env_file`: Compose
+applies `environment:` on top of whatever `env_file` loads, so `stores`' own
+`.env` (which points at `localhost:5433`/`nats://127.0.0.1:4223` — the
+_host-exposed_ ports, correct for `go run` on your machine) stays untouched for
+local dev, while these three keys get overridden specifically for the
+containerized run, where `stores` reaches `postgres`/`nats` by their Compose
+service names over the internal `eda-net` network at their _internal_ ports
+(`5432`/`4222`), not the host-mapped ones. Every other `.env` value (DB
+user/password, `SRV_PORT`, log levels, etc.) passes through unchanged.
+
+**`Makefile`.** No changes needed to `up`/`down` — since `stores` is now just
+another entry in the same `docker-compose.yml`, `make up` picks it up
+automatically. Worth deciding what to do with the existing `stores-run` target,
+though: I'd suggest keeping it as-is, but recognizing it as a _local dev
+convenience_ (fast iteration without rebuilding a Docker image on every change)
+— while `system-state.md`, per the roadmap's own convention, should describe
+what `make up` produces as "Live," not what `stores-run` produces. That's a real
+distinction worth being explicit about rather than blurring.
+
+Once you've added these, the sequence to verify is:
+`docker compose build stores`, then `docker compose up -d` (or `make up`),
+confirm `docker compose ps` shows `stores` reaching a healthy/running state
+after Postgres and NATS report healthy, then re-run the exact `http-connect.sh`
+script from Step 8 unchanged — same `localhost:8080`, since that's still the
+host-mapped port, just now backed by a container instead of `go run`. A clean
+pass there is the actual proof this Step succeeded: the same verified behavior,
+now running the way `02-depot-baskets` will actually depend on.
+
+Let me know how the build and verification go, and then we'll move to
+`journey_progress.md`, `CONTRACT.md`, and `system-state.md` with a真实,
+container-backed `stores` row to write.
+
+#### ENTRYPOINT vx CMD
+
+Good questions — let's take them in order.
+
+**ENTRYPOINT vs. CMD.** You're right on the mechanics: the binary lands at
+`/app/stores`. The real difference between the two instructions is what happens
+when someone runs the container with extra arguments or overrides.
+`CMD ["./stores"]` is _replaced entirely_ if the container is run with any
+command appended (`docker run <image> sh` gives you a shell, not `stores` at
+all); `ENTRYPOINT ["./stores"]` instead _prepends_ to whatever's appended, so
+`docker run <image> --some-flag` would try to run `./stores --some-flag` rather
+than swap it out. `ENTRYPOINT` is the right choice when a container wraps a CLI
+tool that should always run with a fixed program name regardless of what
+arguments get passed. That's not really this container's situation — `stores` is
+a long-running server with no CLI arguments at all, and you specifically
+mentioned wanting to `exec` into it for debugging, which is exactly the case
+where `CMD`'s override-ability is the more useful default
+(`docker compose exec stores sh` gives you a shell cleanly; doing the same
+against an `ENTRYPOINT` container requires the extra `--entrypoint` override
+flag). I don't have a strong reason for `ENTRYPOINT` here — switching to `CMD`
+is the more idiomatic and more convenient choice for this specific container:
+
+```dockerfile
+# 01-stores/Dockerfile
+CMD ["./stores"]
+```

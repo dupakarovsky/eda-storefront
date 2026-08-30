@@ -27,7 +27,7 @@ func main() {
 	// LOGGER INITIALIZATION
 	//============================================================================
 	// instantiate a new logger
-	logger, logFile, err := foundationlogging.New("stores.log", cfg.Logger.TermLevel, cfg.Logger.FileLevel)
+	logger, logFile, err := foundationlogging.New(cfg.Logger.FilePath, cfg.Logger.TermLevel, cfg.Logger.FileLevel)
 	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)

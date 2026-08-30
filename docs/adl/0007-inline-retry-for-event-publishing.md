@@ -84,3 +84,31 @@ scope, not correctness — see Context and Decision above.
   in `depot`/`baskets` unchanged, it's a candidate for promotion into
   `foundation/nats`, following the same "prove it twice before extracting"
   discipline used for everything else in `foundation`.
+
+## Consequences (addendum, 2026-08-28)
+
+- Phase 4 exposed a real collision between this ADL's retry budget and
+  `foundation/http`'s global request/write timeouts: `TimeoutMiddleware`
+  wrapped every request (including every command handler depending on
+  `publishWithRetry`) in a single global deadline that was, until now,
+  shorter than the ~10.5s worst-case retry budget this ADL measured and
+  documented — meaning a real NATS outage encountered through the actual API
+  layer (as opposed to Phase 3's test, which called `Execute` directly
+  against an undeadlined `context.Background()`) would have had the retry
+  sequence cut short by the surrounding HTTP timeout before it could
+  complete, never actually getting the fair five-attempt run this ADL's
+  Decision describes.
+- Resolved for now by raising `foundation/config`'s global
+  `SRV_REQUEST_TIMEOUT`/`SRV_WRITE_TIMEOUT` defaults (12s/13s) past the
+  measured worst case — a system-wide change, since `config.go` lives in
+  `foundation` and every current and future service inherits its defaults,
+  not a `01-stores`-local fix.
+- This is a blunt fix, not a complete one: `foundation`'s `Router` only
+  supports global middleware today, so pure-read RPCs (`GetStore`,
+  `ListProducts`) now inherit the same generous ceiling as a command
+  surviving a full retry sequence, despite never needing anywhere near that
+  long. A per-procedure timeout (via a Connect interceptor, which can branch
+  on `req.Spec().Procedure`) would resolve this properly but was deferred as
+  its own piece of work — noted here as a standing item, in the same spirit
+  as this ADL's original outbox deferral, rather than solved under pressure
+  while closing out Phase 4.

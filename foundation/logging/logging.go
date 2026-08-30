@@ -98,12 +98,6 @@ func (m *multiHandler) WithGroup(name string) slog.Handler {
 // typically via defer in main), and any error opening the file.
 func New(logFilePath, termLevel, fileLevel string) (*slog.Logger, *os.File, error) {
 
-	// open|create the file
-	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	// create a new handler to write exclusively to the terminal
 	consoleHandler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: parseLevel(termLevel), AddSource: true, ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
@@ -133,6 +127,19 @@ func New(logFilePath, termLevel, fileLevel string) (*slog.Logger, *os.File, erro
 			return a
 		},
 	})
+
+	// if no output file is passed in, we create a standard slog handler that
+	// outputs only to stdout. This is be needed when operating in a container
+	// so the logs go to docker compose logs.
+	if logFilePath == "" {
+		return slog.New(consoleHandler), nil, nil
+	}
+
+	// open|create the file
+	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// create a new handler to write exclusively to file output
 	fileHandler := slog.NewJSONHandler(logFile, &slog.HandlerOptions{
