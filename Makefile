@@ -7,7 +7,7 @@
 ## ----------------------------------------------------------------------------
 COMPOSE := docker compose
 
-.PHONY: up down build logs ps
+.PHONY: up down build logs logs/stores ps
 up:
 	$(COMPOSE) up -d
 
@@ -15,11 +15,14 @@ down:
 	# down does NOT tear the the volumes intentionally
 	$(COMPOSE) down 
 
-buid: 
+build:
 	$(COMPOSE) build
 
 logs:
-	$(COMPOSE) logs 
+	$(COMPOSE) logs
+
+logs/stores:
+	$(COMPOSE) logs stores
 
 ps:
 	$(COMPOSE) ps

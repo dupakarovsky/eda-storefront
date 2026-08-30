@@ -18,6 +18,10 @@ func Connect(cfg Config) (*nats.Conn, jetstream.JetStream, error) {
 	opts := []nats.Option{
 		// Client name
 		nats.Name(cfg.Name),
+		// With it set, nats.Connect won't fail immediately if the broker isn't
+		// reachable yet; With this set, it won't let stores try to connect before
+		// NATS is ready.
+		nats.RetryOnFailedConnect(true),
 	}
 
 	if cfg.ConnectTimeout > 0 {

@@ -32,21 +32,6 @@ services:
         # this has to match the volume's mount target : /data
         command: '--jetstream --http_port 8222 --store_dir /data'
 
-        # guarantees that the NATS container has started and
-        # has finished initializing (ready to accept connections)
-        healthcheck:
-            test:
-                [
-                    'CMD',
-                    'wget',
-                    '--spider',
-                    '-q',
-                    'http://localhost:8222/healthz',
-                ]
-            interval: 5s
-            timeout: 3s
-            retries: 5
-
         ports:
             - 127.0.0.1:4223:4222
             - 127.0.0.1:8222:8222
@@ -78,7 +63,8 @@ services:
             postgres:
                 condition: service_healthy
             nats:
-                condition: service_healthy
+                # just wait for the container process to launch, not for readiness
+                condition: service_started
         ports:
             - 127.0.0.1:8080:8080
         networks:
