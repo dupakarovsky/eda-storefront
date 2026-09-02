@@ -11,8 +11,8 @@ COMPOSE := docker compose
 up:
 	$(COMPOSE) up -d
 
+# down does NOT tear the the volumes intentionally
 down:
-	# down does NOT tear the the volumes intentionally
 	$(COMPOSE) down 
 
 build:
@@ -23,6 +23,9 @@ logs:
 
 logs/stores:
 	$(COMPOSE) logs stores
+
+stores/term:
+	$(COMPOSE) kill -s SIGTERM stores
 
 ps:
 	$(COMPOSE) ps

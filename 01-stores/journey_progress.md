@@ -20,7 +20,7 @@ mount onto it with no second port or proxy hop.
 This is the first project since `foundation` was split out (ADL 0005) to build
 on top of it rather than build it.
 
----
+______________________________________________________________________
 
 ## Concepts We'll Cover
 
@@ -45,7 +45,7 @@ methods)
 shared `docker-compose.yml`/`Makefile`, and producing this project's
 `CONTRACT.md` as a real deliverable (ADL 0004)
 
----
+______________________________________________________________________
 
 ## Folder Structure
 
@@ -78,7 +78,7 @@ shared `docker-compose.yml`/`Makefile`, and producing this project's
     └── 0001_init.sql
 ```
 
----
+______________________________________________________________________
 
 ## Phase Plan
 
@@ -112,7 +112,7 @@ live containers.
 shapes (superseding the `system-state.md` placeholders), update
 `system-state.md`, and write the closing Phase summary.
 
----
+______________________________________________________________________
 
 ## Phase 1 — Domain Model (COMPLETED)
 
@@ -183,7 +183,7 @@ repositories with `Reconstitute` rehydration and current-state upserts.
 Concurrency control strategy (row lock vs optimistic version column) still to be
 decided per aggregate based on write pattern.
 
----
+______________________________________________________________________
 
 ## Phase 2 — Postgres Persistence (COMPLETED)
 
@@ -393,186 +393,181 @@ I'll append this to `journey_progress.md` now, alongside the finalized ADL 0007.
 
 **What was built:**
 
-- `storespb/api.proto` — the full `StoresService` contract: eleven RPCs
-  covering every domain command from Phases 1–3 (`CreateStore`,
-  `RebrandStore`, `EnableStoreParticipation`, `DisableStoreParticipation`,
-  `AddProduct`, `RebrandProduct`, `IncreaseProductPrice`,
-  `DecreaseProductPrice`, `RemoveProduct`) plus the project's first two
-  queries (`GetStore`, `ListProducts`). One dedicated request/response
-  message pair per RPC rather than shared shapes, mirroring Phase 1's
-  one-concrete-type-per-event discipline.
+- `storespb/api.proto` — the full `StoresService` contract: eleven RPCs covering
+  every domain command from Phases 1–3 (`CreateStore`, `RebrandStore`,
+  `EnableStoreParticipation`, `DisableStoreParticipation`, `AddProduct`,
+  `RebrandProduct`, `IncreaseProductPrice`, `DecreaseProductPrice`,
+  `RemoveProduct`) plus the project's first two queries (`GetStore`,
+  `ListProducts`). One dedicated request/response message pair per RPC rather
+  than shared shapes, mirroring Phase 1's one-concrete-type-per-event
+  discipline.
 - `buf.yaml`/`buf.gen.yaml` — `buf` codegen wiring (`protoc-gen-go`,
   `protoc-gen-connect-go`), producing `storespb/api.pb.go` and
   `storespb/storespbconnect/api.connect.go`.
 - `internal/connectapi/server.go` — the `Server` type implementing
-  `storespbconnect.StoresServiceHandler` in full, each handler translating
-  wire messages to/from `application`-layer calls; `errors.go`'s `mapError`
+  `storespbconnect.StoresServiceHandler` in full, each handler translating wire
+  messages to/from `application`-layer calls; `errors.go`'s `mapError`
   translating domain sentinel errors (`ErrStoreNotFound`,
   `ErrStoreIsAlreadyParticipating`, etc.) into the right Connect error codes
-  (`CodeNotFound`/`CodeInvalidArgument`/`CodeInternal`), confirmed reaching
-  real HTTP status codes (404/400) through the actual wire, not just
-  asserted via `errors.Is` in a unit test.
+  (`CodeNotFound`/`CodeInvalidArgument`/`CodeInternal`), confirmed reaching real
+  HTTP status codes (404/400) through the actual wire, not just asserted via
+  `errors.Is` in a unit test.
 - Five new `application`-layer use cases
   (`RebrandStore`/`EnableStoreParticipation`/`DisableStoreParticipation`/
   `AddProduct`/`RebrandProduct`/`IncreaseProductPrice`/
   `DecreaseProductPrice`/`RemoveProduct` — eight total alongside Phase 3's
-  `CreateStore`) plus two read-only use cases (`GetStore`, `ListProducts`),
-  the latter deliberately kept in the `application` layer rather than
-  letting `connectapi.Server` call repositories directly (ADL 0008).
-- `internal/application/publish_event.go`'s `publishDomainEvent` extracted
-  as a shared helper once a second, third, and fourth use case needed the
-  same envelope→marshal→subject→publish-with-retry tail Phase 3 wrote once
-  for `CreateStore`.
+  `CreateStore`) plus two read-only use cases (`GetStore`, `ListProducts`), the
+  latter deliberately kept in the `application` layer rather than letting
+  `connectapi.Server` call repositories directly (ADL 0008).
+- `internal/application/publish_event.go`'s `publishDomainEvent` extracted as a
+  shared helper once a second, third, and fourth use case needed the same
+  envelope→marshal→subject→publish-with-retry tail Phase 3 wrote once for
+  `CreateStore`.
 - `ProductRepository.Delete`/`ListByStoreID`, `StoreRepository`/
   `ProductRepository.FindByID` split from their locking `FindByIDForUpdate`
   counterparts (Step 6) — resolving the "row-locking wired but dormant" gap
   Phase 2 had explicitly flagged and deferred.
-- `internal/postgres/txcontext.go`'s `ctxWithTx`/`executorFrom` pair,
-  making `WithLock` actually thread a real `pgx.Tx` through to every
-  repository method called inside its callback — the concrete fix for that
-  same dormant-lock gap (ADL 0010), proven not just by re-passing existing
-  tests but by a dedicated concurrency test measuring genuine blocked time
-  under a held lock (`TestStoreRepository_WithLock_SerializesConcurrentAccess`).
+- `internal/postgres/txcontext.go`'s `ctxWithTx`/`executorFrom` pair, making
+  `WithLock` actually thread a real `pgx.Tx` through to every repository method
+  called inside its callback — the concrete fix for that same dormant-lock gap
+  (ADL 0010), proven not just by re-passing existing tests but by a dedicated
+  concurrency test measuring genuine blocked time under a held lock
+  (`TestStoreRepository_WithLock_SerializesConcurrentAccess`).
 - Server-generated UUIDs for every new aggregate (ADL 0009), decided before
   writing `api.proto` and implemented in `connectapi.Server`'s
   `CreateStore`/`AddProduct` handlers.
 - Twenty-plus tests across `internal/application/*_test.go` — one
-  success/rejection pair per command and query use case, following the
-  same real-infrastructure discipline established in Phase 3
-  (`newTestModule`/`uniqueID` shared test helpers, extracted once three
-  files needed the identical boot sequence).
-- `01-stores/Dockerfile` — two-stage build (`golang:1.25` → `alpine:3.20`),
-  the project's first containerized deployment path.
+  success/rejection pair per command and query use case, following the same
+  real-infrastructure discipline established in Phase 3
+  (`newTestModule`/`uniqueID` shared test helpers, extracted once three files
+  needed the identical boot sequence).
+- `01-stores/Dockerfile` — two-stage build (`golang:1.25` → `alpine:3.20`), the
+  project's first containerized deployment path.
 - `docker-compose.yml` extended with a real `stores` service block
   (network-internal Postgres/NATS addressing via `environment:` overrides
   layered on `env_file`), plus healthchecks added to the `postgres` block;
-  `nats` deliberately left without one after confirming `nats:2.12`'s
-  official image has no shell or utilities capable of running one — the
-  startup-ordering gap that would have covered is instead closed via
-  `foundation/nats`'s new `RetryOnFailedConnect(true)` option, a genuine
-  improvement to `foundation` itself.
+  `nats` deliberately left without one after confirming `nats:2.12`'s official
+  image has no shell or utilities capable of running one — the startup-ordering
+  gap that would have covered is instead closed via `foundation/nats`'s new
+  `RetryOnFailedConnect(true)` option, a genuine improvement to `foundation`
+  itself.
 - `foundation/logging.New` updated to support an empty `logFilePath`
-  (console-only output), driven by a new `LOG_FILE_PATH` config value —
-  closing the "container's log file vanishes on rebuild" gap identified
-  while writing the Dockerfile, rather than carrying it forward silently.
-- `Makefile` reorganized into deployment-vs-development sections, plus a
-  new `build` target.
+  (console-only output), driven by a new `LOG_FILE_PATH` config value — closing
+  the "container's log file vanishes on rebuild" gap identified while writing
+  the Dockerfile, rather than carrying it forward silently.
+- `Makefile` reorganized into deployment-vs-development sections, plus a new
+  `build` target.
 - Four new ADL entries (0008–0010, plus an addendum to 0007) capturing the
-  query-layering decision, server-side ID generation, the transaction-
-  locking pattern choice (and the `TxManager` alternative considered and
-  set aside), and the request-timeout/retry-budget reconciliation.
+  query-layering decision, server-side ID generation, the transaction- locking
+  pattern choice (and the `TxManager` alternative considered and set aside), and
+  the request-timeout/retry-budget reconciliation.
 
 **Issues found and how they were diagnosed:**
 
 - The original `WithLock` implementation began a real `pgx.Tx` but never
-  threaded it into the calls made inside its own callback — every
-  repository method still ran against the bare pool regardless. This
-  wasn't caught by any of Steps 4–6's tests, since none of them were
-  designed to distinguish "a lock was held" from "no lock exists" — a
-  single-threaded call sequence produces identical final database state
-  either way. Only a dedicated concurrency test, measuring actual wall-clock
-  blocked time on a second goroutine while the first genuinely held the
-  row, could prove the difference — and did, failing clearly against the
-  dormant version before the context-propagation fix.
-- An initial `Executor` interface addition (`BeginTx(ctx, pgx.TxOptions)`)
-  would have made `pgx.Tx` itself fail to satisfy `Executor`, since
-  `pgx.Tx`'s real interface only has `Begin` (for nested
-  transactions/savepoints), not `BeginTx` — that method only exists on
-  `*pgxpool.Pool`/`*pgx.Conn`. Caught by inspection before a build was
-  attempted, once the interface was reviewed against what `pgx.Tx` actually
-  exposes, rather than surfacing as a confusing compile error later.
-- `nats:2.12`'s official image has no shell, `wget`, `curl`, or `ls` —
-  confirmed by direct experimentation (`docker run --entrypoint sh` and
-  `--entrypoint ls` both failing with "executable file not found"), not
-  assumed. This made a `CMD-SHELL`-style Docker healthcheck structurally
-  impossible against this image, regardless of which command was tried
-  inside it — resolved by moving the readiness guarantee to the NATS
-  client's own `RetryOnFailedConnect` option instead of the container
-  orchestration layer.
+  threaded it into the calls made inside its own callback — every repository
+  method still ran against the bare pool regardless. This wasn't caught by any
+  of Steps 4–6's tests, since none of them were designed to distinguish "a lock
+  was held" from "no lock exists" — a single-threaded call sequence produces
+  identical final database state either way. Only a dedicated concurrency test,
+  measuring actual wall-clock blocked time on a second goroutine while the first
+  genuinely held the row, could prove the difference — and did, failing clearly
+  against the dormant version before the context-propagation fix.
+- An initial `Executor` interface addition (`BeginTx(ctx, pgx.TxOptions)`) would
+  have made `pgx.Tx` itself fail to satisfy `Executor`, since `pgx.Tx`'s real
+  interface only has `Begin` (for nested transactions/savepoints), not `BeginTx`
+  — that method only exists on `*pgxpool.Pool`/`*pgx.Conn`. Caught by inspection
+  before a build was attempted, once the interface was reviewed against what
+  `pgx.Tx` actually exposes, rather than surfacing as a confusing compile error
+  later.
+- `nats:2.12`'s official image has no shell, `wget`, `curl`, or `ls` — confirmed
+  by direct experimentation (`docker run --entrypoint sh` and `--entrypoint ls`
+  both failing with "executable file not found"), not assumed. This made a
+  `CMD-SHELL`-style Docker healthcheck structurally impossible against this
+  image, regardless of which command was tried inside it — resolved by moving
+  the readiness guarantee to the NATS client's own `RetryOnFailedConnect` option
+  instead of the container orchestration layer.
 - The global `SRV_REQUEST_TIMEOUT`/`SRV_WRITE_TIMEOUT` values (3s/10s) were
-  shorter than ADL 0007's measured ~10.5s worst-case retry budget — a real
-  gap invisible until an actual HTTP-layer request had a reason to exercise
-  the full retry path, which nothing had prior to this phase (Phase 3's own
-  outage test called `Execute` directly against an undeadlined
-  `context.Background()`). Resolved by raising both defaults in
-  `foundation/config` past the measured worst case (12s/13s), accepting
-  read RPCs inheriting the same ceiling as a documented, named trade-off
-  (ADL 0007 addendum) rather than solving it with a bespoke per-route
-  timeout mid-phase.
+  shorter than ADL 0007's measured ~10.5s worst-case retry budget — a real gap
+  invisible until an actual HTTP-layer request had a reason to exercise the full
+  retry path, which nothing had prior to this phase (Phase 3's own outage test
+  called `Execute` directly against an undeadlined `context.Background()`).
+  Resolved by raising both defaults in `foundation/config` past the measured
+  worst case (12s/13s), accepting read RPCs inheriting the same ceiling as a
+  documented, named trade-off (ADL 0007 addendum) rather than solving it with a
+  bespoke per-route timeout mid-phase.
 
 **Key concepts reinforced:**
 
-- The difference between a data-correctness test and a concurrency-
-  correctness test — the former confirms an operation's final effect, the
-  latter must confirm something about _timing_ under real contention, since
-  a broken lock and a working lock can produce identical final state in a
-  single-threaded scenario.
-- Go's structural interface-to-interface assignability check (`pgx.Tx`
-  failing to satisfy an `Executor` that declared a method `pgx.Tx` doesn't
-  have) as a real, if narrow, category of compile error worth understanding
-  rather than discovering by trial and error.
+- The difference between a data-correctness test and a concurrency- correctness
+  test — the former confirms an operation's final effect, the latter must
+  confirm something about _timing_ under real contention, since a broken lock
+  and a working lock can produce identical final state in a single-threaded
+  scenario.
+- Go's structural interface-to-interface assignability check (`pgx.Tx` failing
+  to satisfy an `Executor` that declared a method `pgx.Tx` doesn't have) as a
+  real, if narrow, category of compile error worth understanding rather than
+  discovering by trial and error.
 - `go mod tidy`'s single-module scope versus `go build`/`go run`/`go test`'s
-  workspace-aware scope — carried over from Phase 3's `go.work`
-  discoveries, revisited here as background context for why `01-stores/
-go.mod`'s `replace` directive (not `go.work`) is what makes the Dockerfile
-  able to build without any workspace file present in the image at all.
+  workspace-aware scope — carried over from Phase 3's `go.work` discoveries,
+  revisited here as background context for why `01-stores/ go.mod`'s `replace`
+  directive (not `go.work`) is what makes the Dockerfile able to build without
+  any workspace file present in the image at all.
 - Container image minimalism as a real operational constraint, not just a
-  security nicety — `nats:2.12`'s missing shell forced a genuine
-  architectural choice (client-side retry vs. container-side healthcheck)
-  rather than a cosmetic one.
-- Protobuf JSON's default zero-value omission applying identically to
-  scalar fields (`participating: false`, first seen in Phase 3/Step 3) and
-  empty repeated fields (`products: []` rendering as an absent key
-  entirely) — the same underlying behavior, confirmed at the wire level for
-  the first time in Step 8 after being designed for at the Go level back in
-  Step 6.
+  security nicety — `nats:2.12`'s missing shell forced a genuine architectural
+  choice (client-side retry vs. container-side healthcheck) rather than a
+  cosmetic one.
+- Protobuf JSON's default zero-value omission applying identically to scalar
+  fields (`participating: false`, first seen in Phase 3/Step 3) and empty
+  repeated fields (`products: []` rendering as an absent key entirely) — the
+  same underlying behavior, confirmed at the wire level for the first time in
+  Step 8 after being designed for at the Go level back in Step 6.
 
 **Deviations from the original Phase 4 plan, and why:**
 
-- The original plan (see this file's Phase Plan section) scoped Phase 4 as
-  five steps ending in "Wiring, Compose, and Verification" as Phase 5. In
-  practice, verifying the API layer surfaced two genuine, unplanned pieces
-  of work — the dormant-lock fix and the timeout/retry reconciliation —
-  each substantial enough to warrant its own Step (7 and part of 8) and ADL
-  entry rather than being folded silently into what was meant to be a
-  wiring pass. Containerizing `stores` (Step 9) was likewise not in the
-  original five-step plan, added once it became clear `system-state.md`
-  marking `stores` "Live" needed to mean what it already means for
-  `foundation` — a real running container, not a process on the developer's
-  machine — before `02-depot-baskets` could honestly depend on it.
-- `RemoveProduct` has no domain-level rejection case (`Product.Remove()`
-  cannot fail) — its test suite's "rejection" case is instead "called
-  against an ID that doesn't exist," the only real failure mode left once
-  the domain method itself can't reject.
+- The original plan (see this file's Phase Plan section) scoped Phase 4 as five
+  steps ending in "Wiring, Compose, and Verification" as Phase 5. In practice,
+  verifying the API layer surfaced two genuine, unplanned pieces of work — the
+  dormant-lock fix and the timeout/retry reconciliation — each substantial
+  enough to warrant its own Step (7 and part of 8) and ADL entry rather than
+  being folded silently into what was meant to be a wiring pass. Containerizing
+  `stores` (Step 9) was likewise not in the original five-step plan, added once
+  it became clear `system-state.md` marking `stores` "Live" needed to mean what
+  it already means for `foundation` — a real running container, not a process on
+  the developer's machine — before `02-depot-baskets` could honestly depend on
+  it.
+- `RemoveProduct` has no domain-level rejection case (`Product.Remove()` cannot
+  fail) — its test suite's "rejection" case is instead "called against an ID
+  that doesn't exist," the only real failure mode left once the domain method
+  itself can't reject.
 - The originally-considered `domain.TxManager` pattern (explicit tx-scoped
-  repositories passed as callback arguments) was fully prototyped — all
-  seven affected use cases rewritten, a `postgres.TxManager` implementation
-  written — before being set aside in favor of the context-scoped
-  `Executor` approach, specifically to avoid `TxManager.WithTx` forcing
-  every callback to receive both `StoreRepository` and `ProductRepository`
-  regardless of which aggregate a given use case actually concerns (ADL
-  0010). Worth remembering this was a real, working alternative that was
-  deliberately not chosen, not an approach that was tried and failed.
+  repositories passed as callback arguments) was fully prototyped — all seven
+  affected use cases rewritten, a `postgres.TxManager` implementation written —
+  before being set aside in favor of the context-scoped `Executor` approach,
+  specifically to avoid `TxManager.WithTx` forcing every callback to receive
+  both `StoreRepository` and `ProductRepository` regardless of which aggregate a
+  given use case actually concerns (ADL 0010). Worth remembering this was a
+  real, working alternative that was deliberately not chosen, not an approach
+  that was tried and failed.
 
 **State at end of Phase 4:** `01-stores` exposes all eleven RPCs from
-`api.proto` through ConnectRPC, backed by real `application`-layer use cases
-for every command and query, verified three independent ways — direct
-`Execute` calls in Go tests, real HTTP requests against `go run` (Step 3/8),
-and real HTTP requests against the actual container `02-depot-baskets` will
-depend on (Step 9). The transactional row-locking gap Phase 2 left open is
-closed and proven under real concurrency. `docker-compose.yml`/`Makefile`
-now produce a genuinely running `stores` container, matching every other
-service's deployment shape for the first time.
+`api.proto` through ConnectRPC, backed by real `application`-layer use cases for
+every command and query, verified three independent ways — direct `Execute`
+calls in Go tests, real HTTP requests against `go run` (Step 3/8), and real HTTP
+requests against the actual container `02-depot-baskets` will depend on (Step
+9). The transactional row-locking gap Phase 2 left open is closed and proven
+under real concurrency. `docker-compose.yml`/`Makefile` now produce a genuinely
+running `stores` container, matching every other service's deployment shape for
+the first time.
 
 **Carried into Phase 5 (`02-depot-baskets`):** `01-stores`'s `CONTRACT.md`
-(finalized alongside this entry) is what `depot`/`baskets` will actually
-consume — not this file, not `01-stores`' source tree, per ADL 0004. The
+(finalized alongside this entry) is what `depot`/`baskets` will actually consume
+— not this file, not `01-stores`' source tree, per ADL 0004. The
 `foundation/nats` `RetryOnFailedConnect` addition and `foundation/logging`'s
 empty-path console-only mode are both real `foundation` improvements every
 future service inherits automatically. The still-open items explicitly not
-resolved in this phase — per-procedure timeouts via a Connect interceptor,
-the transactional outbox deferred by ADL 0007, and the `TxManager`
-alternative noted in ADL 0010 as worth revisiting once a service needs a
-genuine cross-aggregate transaction — remain standing items for whichever
-future phase first has concrete pressure to resolve them, not closed
-questions.
+resolved in this phase — per-procedure timeouts via a Connect interceptor, the
+transactional outbox deferred by ADL 0007, and the `TxManager` alternative noted
+in ADL 0010 as worth revisiting once a service needs a genuine cross-aggregate
+transaction — remain standing items for whichever future phase first has
+concrete pressure to resolve them, not closed questions.

@@ -14,7 +14,7 @@ import (
 	"github.com/dupakarovsky/eda-storefront/foundation/logging"
 	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
 	"github.com/dupakarovsky/eda-storefront/foundation/postgres"
-	"github.com/dupakarovsky/eda-storefront/foundation/shutdown"
+	foundationshutdown "github.com/dupakarovsky/eda-storefront/foundation/shutdown"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -153,7 +153,10 @@ func main() {
 		WriteTimeout:      cfg.Server.WriteTimeout,
 		IdleTimeout:       cfg.Server.IdleTimeout,
 	}
-	if err = shutdown.Run(logger, srv, cfg.Server.ShutdownTimeout); err != nil {
+
+	// intializes a new httpService for stores
+	storesHTTPService := foundationshutdown.NewHTTPService("SMOKETEST", logger, srv)
+	if err = foundationshutdown.Run(logger, cfg.Server.ShutdownTimeout, storesHTTPService); err != nil {
 		logger.Error("server existed with error", "error", err)
 		os.Exit(1)
 	}

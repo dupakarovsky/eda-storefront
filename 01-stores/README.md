@@ -692,7 +692,7 @@ Run it and confirm both the console output (price should print as `8.5`, no
 precision drift) and the raw row via `psql` (`SELECT * FROM products;` — `price`
 should read `8.50`). Let me know what you get.
 
----
+______________________________________________________________________
 
 ## **Phase 3 — Event Publishing**
 
@@ -1533,7 +1533,7 @@ A couple of things worth flagging before we start:
 - I'll keep every code snippet in the chat window per your guideline, and you'll
   create the files and run things on your end, reporting back before we move on.
 
----
+______________________________________________________________________
 
 ### **Step 1 — Proto service definition.**
 

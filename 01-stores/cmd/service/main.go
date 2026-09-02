@@ -79,7 +79,11 @@ func main() {
 	//============================================================================
 	// SERVER STARTUP AND GRACEFUL SHUTDOWN INITIALIZATION
 	//============================================================================
-	if err := foundationshutdown.Run(logger, srv, cfg.Server.ShutdownTimeout); err != nil {
+
+	// intializes a new httpService for stores
+	storesHTTPService := foundationshutdown.NewHTTPService("STORES", logger, srv)
+
+	if err := foundationshutdown.Run(logger, cfg.Server.ShutdownTimeout, storesHTTPService); err != nil {
 		logger.Error("server exited with error", "error", err)
 	}
 }
