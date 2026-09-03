@@ -2,7 +2,7 @@
 CONTRACT.md template — see docs/adl/0004-cross-project-artifact-boundary.md
 for why this file exists and what it's for.
 
-Copy this into each project folder (e.g. 01-stores/CONTRACT.md) and fill it
+Copy this into each project folder (e.g. stores/CONTRACT.md) and fill it
 in as the service's public surface solidifies — realistically finalized at
 the same point journey_progress.md's "State at End of Project" section and
 docs/system-state.md are updated.

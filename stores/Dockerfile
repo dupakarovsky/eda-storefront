@@ -10,9 +10,9 @@ WORKDIR /workspace
 # /workspace/foundation folder
 COPY foundation/ ./foundation
 
-# copy the 01-stores local folder to the container's 
-# /workspace/01-stores folder
-COPY 01-stores/ ./01-stores
+# copy the stores local folder to the container's 
+# /workspace/stores folder
+COPY stores/ ./stores
 
 # redefine the current working directory as /workspace/01-stores
 WORKDIR /workspace/01-stores

@@ -70,6 +70,13 @@ original message's raw payload onto `<service>.deadletter.<original
 -subject>`, reusing the existing `Publisher` rather than inventing a
 second publish mechanism.
 
+If `msg.Metadata()` itself fails (returns a `nil` metadata pointer) — a
+rare condition, but one that leaves delivery count genuinely unknown —
+`onMessage` deliberately does not call `Ack`, `Nak`, or `Term` at all. The
+message is left to the consumer's own `AckWait` timeout, which (unlike our
+explicit `NakWithDelay` calls) natively honors `BackOff` without needing a
+known delivery count to compute against.
+
 ## Alternatives considered
 
 **Rely on JetStream's own `MAX_DELIVERIES` advisory subject**
@@ -83,13 +90,6 @@ groundwork surface for a system that doesn't have a concrete second
 consumer of dead letters yet. Worth reconsidering once `notifications`
 (Project 8) or an operational dashboard gives dead letters a real
 downstream reader.
-
-If `msg.Metadata()` itself fails (returns a `nil` metadata pointer) — a
-rare condition, but one that leaves delivery count genuinely unknown —
-`onMessage` deliberately does not call `Ack`, `Nak`, or `Term` at all. The
-message is left to the consumer's own `AckWait` timeout, which (unlike our
-explicit `NakWithDelay` calls) natively honors `BackOff` without needing a
-known delivery count to compute against.
 
 **Defer dead-lettering entirely, matching ADL 0007's outbox deferral.**
 Rejected this time specifically — asked for directly rather than
@@ -111,13 +111,4 @@ from the start rather than a hypothetical one.
   failing during an already-exhausted message is a real, currently
   unhandled compounding failure — narrow, but not zero, and worth
   remembering rather than assuming solved by this ADL.
-- The dead-letter subject convention (`<service>.deadletter.<original
--subject>`) needs to actually be included in whatever stream's subject
-  list receives it — this ADL does not itself define or provision that
-  stream; that's a concrete task for whichever phase first wires a real
-  `DeadLetterFunc` into a running `Subscriber` (`depot`/`baskets`,
-  Phase 3/4).
-- `MaxAckPending` (the consumer's cap on simultaneously-outstanding
-  unacked messages) was not addressed by this ADL and is left at its
-  server default — worth a deliberate look once real throughput/latency
-  numbers exist for `depot`/`baskets`, not invented speculatively here.
+- The dead-letter subject convention

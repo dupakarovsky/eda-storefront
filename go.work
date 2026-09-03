@@ -3,6 +3,5 @@ go 1.25.0
 use (
 	./foundation
 	./foundation-smoketest
-	./01-stores
-	./02-depot-baskets
+	./stores
 )

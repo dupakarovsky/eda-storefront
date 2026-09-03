@@ -1,7 +1,7 @@
 # Contract — `stores`
 
 **Status:** Live
-**Project folder:** `01-stores/`
+**Project folder:** `stores/`
 **Last updated:** 2026-08-30
 
 Owns and is the source of truth for store and product catalog data — store

@@ -100,10 +100,10 @@ eda-storefront/                    (workspace root)
 │                                    logging, NATS/Postgres wiring — built
 │                                    once during Project 1, reused everywhere)
 │   └── go.mod
-├── 01-stores/
+├── stores/
 │   ├── journey_progress.md
 │   └── go.mod
-├── 02-depot-baskets/
+├── depot-baskets/
 │   ├── journey_progress.md        (one log covering both services,
 │   │                                same convention as order-fulfillment's
 │   │                                Order+Inventory pairing)
@@ -111,22 +111,22 @@ eda-storefront/                    (workspace root)
 │   │   └── go.mod
 │   └── baskets/
 │       └── go.mod
-├── 03-ordering/
+├── ordering/
 │   ├── journey_progress.md
 │   └── go.mod
-├── 04-payments/
+├── payments/
 │   ├── journey_progress.md
 │   └── go.mod
-├── 05-customers/
+├── customers/
 │   ├── journey_progress.md
 │   └── go.mod
-├── 06-storefront/
+├── storefront/
 │   ├── journey_progress.md
 │   └── go.mod
-├── 07-search/
+├── search/
 │   ├── journey_progress.md
 │   └── go.mod
-├── 08-notifications/
+├── notifications/
 │   ├── journey_progress.md
 │   └── go.mod
 └── docs/
@@ -169,16 +169,16 @@ project ends without updating it again to reflect what's now live as a result.
 
 ## Project sequence
 
-| #   | Project            | Service(s)                | Must already be live                                                                      | What's genuinely new                                                                                                                                                                        |
-| --- | ------------------ | ------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `01-stores`        | `stores`                  | — (root)                                                                                  | The `foundation/` package (config, graceful shutdown, logging, NATS/Postgres wiring), built once here and reused by every later project; first real NATS-publishing service                 |
-| 2   | `02-depot-baskets` | `depot`, `baskets`        | `stores`                                                                                  | Consuming real events off a real broker and projecting them into a local read cache — done twice, against two different domains, in one project                                             |
-| 3   | `03-ordering`      | `ordering`                | `stores`, `depot`, `baskets`                                                              | Fan-in coordination: one service reacting to two independent upstream event sources; the real event-driven analogue of `order-fulfillment`'s in-process `PayOrder`/`Inventory` coordination |
-| 4   | `04-payments`      | `payments`                | all of the above                                                                          | Simplest remaining consumer (single upstream); closes the core commerce loop end-to-end                                                                                                     |
-| 5   | `05-customers`     | `customers`               | — (root, but built now rather than earlier, since nothing needed it until the storefront) | Second and last standalone root service                                                                                                                                                     |
-| 6   | `06-storefront`    | web UI (Templ + Datastar) | `stores`, `baskets`, `ordering`, `payments`, `customers`                                  | First frontend project; Datastar/SSE integration with real backend events; real customer identity from day one (no placeholder auth)                                                        |
-| 7   | `07-search`        | `search`                  | `stores`, `ordering`, `customers`                                                         | Multi-source read-model / CQRS projection pattern; feeds a real "order history" page back into the storefront                                                                               |
-| 8   | `08-notifications` | `notifications`           | `customers`, `ordering`                                                                   | The one piece the source book leaves unimplemented — real integration with an email/SMS provider behind a `Notifier` port, verified against a real inbox (Mailpit) before a real provider   |
+| #   | Project         | Service(s)                | Must already be live                                                                      | What's genuinely new                                                                                                                                                                        |
+| --- | --------------- | ------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `stores`        | `stores`                  | — (root)                                                                                  | The `foundation/` package (config, graceful shutdown, logging, NATS/Postgres wiring), built once here and reused by every later project; first real NATS-publishing service                 |
+| 2   | `depot-baskets` | `depot`, `baskets`        | `stores`                                                                                  | Consuming real events off a real broker and projecting them into a local read cache — done twice, against two different domains, in one project                                             |
+| 3   | `ordering`      | `ordering`                | `stores`, `depot`, `baskets`                                                              | Fan-in coordination: one service reacting to two independent upstream event sources; the real event-driven analogue of `order-fulfillment`'s in-process `PayOrder`/`Inventory` coordination |
+| 4   | `payments`      | `payments`                | all of the above                                                                          | Simplest remaining consumer (single upstream); closes the core commerce loop end-to-end                                                                                                     |
+| 5   | `customers`     | `customers`               | — (root, but built now rather than earlier, since nothing needed it until the storefront) | Second and last standalone root service                                                                                                                                                     |
+| 6   | `storefront`    | web UI (Templ + Datastar) | `stores`, `baskets`, `ordering`, `payments`, `customers`                                  | First frontend project; Datastar/SSE integration with real backend events; real customer identity from day one (no placeholder auth)                                                        |
+| 7   | `search`        | `search`                  | `stores`, `ordering`, `customers`                                                         | Multi-source read-model / CQRS projection pattern; feeds a real "order history" page back into the storefront                                                                               |
+| 8   | `notifications` | `notifications`           | `customers`, `ordering`                                                                   | The one piece the source book leaves unimplemented — real integration with an email/SMS provider behind a `Notifier` port, verified against a real inbox (Mailpit) before a real provider   |
 
 See `docs/adl/0001-service-build-order.md` for the reasoning behind this order,
 including the alternatives that were considered and rejected — particularly why

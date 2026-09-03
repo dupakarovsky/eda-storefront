@@ -39,12 +39,12 @@ export
 
 .PHONY: migrate/up migrate/down
 migrate/up:
-	@migrate -path 01-stores/migrations \
+	@migrate -path stores/migrations \
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
 		up
 
 migrate/down:
-	@migrate -path 01-stores/migrations \
+	@migrate -path stores/migrations \
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
 		down 1
 
@@ -68,10 +68,10 @@ foundation/smoke:
 
 stores/run:
 	@echo 'Running stores service...'
-	@mkdir -p ./01-stores/bin
-	GOOS=linux GOARCH=amd64 go build -o=./01-stores/bin/stores ./01-stores/cmd/service/
-	chmod +x ./01-stores/bin/stores
-	cd ./01-stores && ./bin/stores
+	@mkdir -p ./stores/bin
+	GOOS=linux GOARCH=amd64 go build -o=./stores/bin/stores ./stores/cmd/service/
+	chmod +x ./stores/bin/stores
+	cd ./stores && ./bin/stores
 
 ## ----------------------------------------------------------------------------
 ## -- database access ---

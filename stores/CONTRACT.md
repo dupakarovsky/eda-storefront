@@ -1,6 +1,6 @@
 # Contract — `stores`
 
-**Status:** Live **Project folder:** `01-stores/` **Last updated:** 2026-08-30
+**Status:** Live **Project folder:** `stores/` **Last updated:** 2026-09-03
 
 Owns and is the source of truth for store and product catalog data — store
 identity/location/participation status, and each store's products
@@ -138,7 +138,7 @@ consumer should assume can't happen.
 ConnectRPC, served at `/stores.v1.StoresService/<Method>`, supporting both real
 gRPC and Connect's own HTTP+JSON protocol (the latter requires a
 `Connect-Protocol-Version: 1` header). All eleven methods below are live and
-verified — see `01-stores/storespb/api.proto` for exact message shapes. IDs are
+verified — see `stores/storespb/api.proto` for exact message shapes. IDs are
 server-generated (UUID) on creation, never client-supplied.
 
 | Method                      | Request → Response                                        | Notes                                                                                                                                                                                                                                          |
