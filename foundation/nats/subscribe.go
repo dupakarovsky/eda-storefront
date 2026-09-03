@@ -3,7 +3,9 @@ package foundationnats
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -12,15 +14,22 @@ import (
 // handles messages from NATS
 type MessageHandler func(ctx context.Context, msg jetstream.Msg) error
 
+// DeadLetterFunc defines a signature for a function that
+// handles undelivered messages to the client.
+type DeadLetterFunc func(ctx context.Context, msg jetstream.Msg, cause error)
+
 // Subscriber defines a type that can Subscribe to the JetStream context
 // and pull (consume) messages from it via a handler.
-// It will implement the foundationshutdown.Service interface, same as an httpServer
+// It will implement the foundationshutdown.Service interface methods,
+// same as an httpServer
 type Subscriber struct {
 	name        string
 	js          jetstream.JetStream
+	logger      *slog.Logger
 	streamName  string
 	consumerCfg jetstream.ConsumerConfig
 	handler     MessageHandler
+	deadLetter  DeadLetterFunc
 	//------------------------
 	mu   sync.Mutex
 	cc   jetstream.ConsumeContext
@@ -33,18 +42,41 @@ func NewSubscriber(
 	name string,
 	js jetstream.JetStream,
 	streamName string,
+	logger *slog.Logger,
 	consumerCfg jetstream.ConsumerConfig,
 	handler MessageHandler,
+	deadLetter DeadLetterFunc,
 ) *Subscriber {
 
 	return &Subscriber{
 		name:        name,
 		js:          js,
 		streamName:  streamName,
+		logger:      logger,
 		consumerCfg: consumerCfg,
 		handler:     handler,
+		deadLetter:  deadLetter,
 		done:        make(chan struct{}),
 	}
+}
+
+func (s *Subscriber) WithDefaultConsumerConfigBackoff() {
+
+	config := jetstream.ConsumerConfig{
+		AckPolicy:  jetstream.AckExplicitPolicy,
+		AckWait:    5 * time.Second,
+		MaxDeliver: 5,
+		BackOff: []time.Duration{
+			5 * time.Second,
+			15 * time.Second,
+			30 * time.Second,
+			60 * time.Second,
+		},
+		// FilterSubject left empty — consumes the whole stores stream
+	}
+
+	s.consumerCfg = config
+	// FilterSubject left empty — consumes the whole stores stream
 }
 
 // Name returns the name of the subscring type
@@ -155,18 +187,77 @@ func (s *Subscriber) Close() error {
 // onMessage will be called to process messages when Consume is called
 func (s *Subscriber) onMessage(msg jetstream.Msg) {
 
+	ctx := context.Background()
+
 	// passses the message to the Subscriber's own handler function
-	if err := s.handler(context.Background(), msg); err != nil {
-		// if the handler fails, tell the server to re-deliver the message.
-		msg.Nak()
+	err := s.handler(ctx, msg)
+	// on succcess, just ackownledge to the server and exit
+	if nil == err {
+		msg.Ack()
 		return
 	}
 
-	// message has been succesfuly handled
-	// -----------------------------------
+	// the handler has failed somehow; server needs to retry
+	// -----------------------------------------------------
 
-	// return a positive response to the server
-	msg.Ack()
+	// capture the metadata from the message
+	meta, metaErr := msg.Metadata()
+	switch {
+
+	// === Metadata() failed to parse (rare edge case) ===
+	case meta == nil:
+		// log the error and return. The message will sit until the consumer's AckWait
+		// timer expires on its own, falling back to JetStream's native timeout-driven redeliver
+		s.logger.Error("failed to read message metadata, leaving unacked for AckWait redelivery",
+			"subject", msg.Subject(),
+			"handler_error", err,
+			"metadata_error", metaErr,
+		)
+		return
+
+	// === On very the last retry ===
+	case s.consumerCfg.MaxDeliver > 0 && meta.NumDelivered >= uint64(s.consumerCfg.MaxDeliver):
+		// send the message to the deadLetter function
+		if s.deadLetter != nil {
+			s.deadLetter(ctx, msg, err)
+		}
+		// tells the server to stop retrying
+		msg.Term()
+		return
+
+	// === Handler failed to deliver and we're need to keep retrying ===
+	default:
+		// NakWithDelay will tell the server to redeliver the message after the given delay.
+		// The delay is exponential value computed by our custom backoffFor funtion.
+		msg.NakWithDelay(s.backoffFor(meta.NumDelivered))
+	}
+}
+
+// backoffFor computes the exponential backoff for the NakWithDelay method.
+// It'll return a value from the BackOff slice based on the number delivered
+// attempts
+func (s *Subscriber) backoffFor(delivered uint64) time.Duration {
+
+	// consumerCfg.BackoffFor is a slice of time.Durations
+	// if the slice is empty, then BackOff is not set
+	if len(s.consumerCfg.BackOff) == 0 {
+		return 0
+	}
+
+	// idx the index of the BackOff slice of durations
+	idx := int(delivered) - 1
+
+	// protect the index from going negative
+	if idx < 0 {
+		idx = 0
+	}
+	// protect the index from goint above the slice length
+	if idx >= len(s.consumerCfg.BackOff) {
+		idx = len(s.consumerCfg.BackOff) - 1
+	}
+
+	// get the entry from the BackOff slice
+	return s.consumerCfg.BackOff[idx]
 }
 
 // markDone will close the Subscriber done channel.

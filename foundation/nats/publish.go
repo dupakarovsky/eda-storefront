@@ -31,5 +31,6 @@ func (p *Publisher) Publish(ctx context.Context, subject string, payload []byte)
 		return nil, fmt.Errorf("publishing to %q: %w", subject, err)
 	}
 
+	// return the ack to the caller
 	return ack, nil
 }

@@ -10,7 +10,7 @@ import (
 // Connect returns two things: the raw *nats.Conn (the actual socket/protocol
 // connection. You'll want this later for lifecycle management, e.g. nc.Close() in shutdown)
 // and a jetstream.JetStream value, which is a context for JetStream operations
-// (streams, consumers, publishing) built on top of that connection, not a separate
+// (streams, consumers, publishers) built on top of that connection, not a separate
 // connection. This mirrors the split you'd expect: nats.Connect gives you the
 // transport, jetstream.New gives you the higher-level API layered on it.
 func Connect(cfg Config) (*nats.Conn, jetstream.JetStream, error) {

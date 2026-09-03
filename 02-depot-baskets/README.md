@@ -300,3 +300,159 @@ cleanly.
 Does that clear it up? Happy to go a level deeper on how `Consume`'s internal
 pull loop actually works against the NATS server if that's useful context, or we
 can move on to compiling this and then Step 2 (the durable/ack-policy decision).
+
+### Step 2 — The ack/redelivery strategy discussion
+
+Nice — Subscriber's locked in structurally. On to **Step 2: durable-consumer and
+ack strategy**. This is one of those "worth deciding deliberately and writing
+down" moments (same spirit as ADL 0007's outbox deferral) rather than picking
+defaults quietly, so let's walk through the actual choices.
+
+**1. How many durable consumers, and named how?**
+
+Both `depot` and `baskets` need to independently read the _same_ `stores` stream
+(`stores.store.*` / `stores.product.*`) to build their own separate local
+caches. This is exactly the "two independent durable consumer groups against one
+stream" item your `journey_progress.md` flagged as a concept to cover.
+Concretely: two distinct `Durable` names — something like
+`depot-stores-projector` and `baskets-stores-projector` — each maintaining its
+own separate delivery cursor on the same stream. Neither sees the other's ack
+state; a message redelivered to `depot` because its handler failed has no effect
+on what `baskets` has already acked.
+
+**2. Filter subject — narrow or take everything?**
+
+Per ADL 0001, both `depot` and `baskets` maintain "a local product/store cache"
+— i.e., they need _both_ store events and product events, not a subset. So I'd
+leave `FilterSubject` empty on both consumers (consume the whole stream) rather
+than filtering to `stores.store.*` or `stores.product.*` alone. If that
+assumption's wrong — e.g. if `depot` genuinely only ever needs product events —
+that'd change this.
+
+**3. Ack policy — this one's not really a choice.** `Consume()` with a
+manual-disposition callback (what our `Subscriber` does) requires
+`AckExplicitPolicy`. The alternatives (`AckNonePolicy`, `AckAllPolicy`) don't
+fit a "the handler decides ack/nak per message" model at all, so this is
+effectively forced by the design already committed to in Step 1.
+
+**4. Redelivery — `AckWait` and `MaxDeliver`, and whether to set `BackOff`**
+
+This is the one with real tradeoffs. Three sub-decisions:
+
+- **`AckWait`** — how long JetStream waits for an ack before considering a
+  message eligible for redelivery. Default is 30s. Since our handlers are meant
+  to be fast idempotent Postgres upserts (not the kind of slow work `AckWait` is
+  usually tuned around), I'd lean toward leaving this at the default rather than
+  inventing a number without a measured reason to change it — consistent with
+  how `pool.go`'s comment treats unmeasured tuning as a known bug pattern to
+  avoid repeating.
+- **`MaxDeliver`** — a bounded number of redelivery attempts before JetStream
+  gives up on a message (server-side; not the same as ADL 0007's _inline_ retry
+  loop, which was about the publish side, not consumption). Unbounded (`-1`)
+  risks a poison message looping forever if a handler has a genuine,
+  non-transient bug. I'd propose a bounded value, e.g. `5`.
+- **`BackOff`** — an optional `[]time.Duration` schedule for redelivery spacing
+  (first retry after X, second after Y, etc.), instead of every retry waiting
+  the flat `AckWait` duration. Purely optional — omitting it just means every
+  redelivery waits `AckWait` uniformly.
+
+**The real question for you:** once `MaxDeliver` is exhausted, JetStream just
+stops redelivering — there's no automatic dead-letter queue in this library
+version, and our current `Subscriber` doesn't expose `Term()` for a handler to
+explicitly give up early either. That means a persistently-failing message (say,
+`depot`'s DB is down for an extended stretch) will silently stop being retried
+after 5 attempts, with nothing but a log line (once we add one) marking it.
+That's a real gap, structurally similar to ADL 0007's "publish retry exhausted,
+nobody notices" gap.
+
+Given that parallel, I'd suggest we **name this gap explicitly and defer it**
+the same way ADL 0007 did, rather than solve dead-lettering now as groundwork
+scope creep. Does that match your instinct, or would you rather we build a
+minimal dead-letter subject now while we're already in this code?
+
+#### Retries on Failed to Deliver Messages
+
+**A real problem with the current `onMessage`:** `msg.Nak()` (no arguments)
+**does not respect `AckWait` or `BackOff` at all** — it triggers an _immediate_
+redelivery, full stop. Those settings only govern the case where a message is
+delivered and the client _never responds_ (crash, hang) — the server's own
+timeout-based redelivery. Since our `onMessage` explicitly calls `Nak()` on
+every handler error, the `BackOff` schedule we're about to configure would
+silently never engage on the failure path we actually care about — every retry
+would fire back-to-back as fast as the client can process them, hammering
+whatever's down (e.g. a stalled Postgres) in a tight loop bounded only by
+`MaxDeliver`. That's the opposite of what you asked for. To get real backoff, we
+need to switch to `NakWithDelay(delay)`, computing `delay` ourselves from the
+message's own delivery count and our `BackOff` schedule.
+
+That same code path is also the natural place to solve your dead-letter
+requirement — since we're already inspecting delivery count to pick a backoff
+delay, we already know exactly when we're on the _last_ attempt.
+
+**Revised `onMessage`, plus the pieces it needs:**
+
+```go
+// foundation/nats/subscribe.go
+```
+
+A few things worth being explicit about:
+
+- **`msg.Term()` on the last attempt, rather than trusting `MaxDeliver` alone to
+  stop things.** `Term()` unconditionally tells the server to stop redelivering
+  this message, regardless of `MaxDeliver`. Deciding to give up is now an
+  explicit act in our own code, made once, at the point we've already decided to
+  dead-letter — not an implicit consequence of a number matching up correctly.
+  Same "make the boundary legible" instinct as ADL 0006's explicit `reject`
+  rules.
+- **`DeadLetterFunc` is a caller-supplied callback, not something `Subscriber`
+  hardcodes.** `foundation` stays a thin mechanism layer; what "dead lettering"
+  actually _means_ (publish somewhere, log, page someone) is a decision for
+  whoever wires up a concrete `Subscriber`. That said, since every future
+  consumer will want _something_ here, I'd suggest a small default helper
+  alongside it:
+
+```go
+// foundation/nats/deadletter.go
+```
+
+This reuses the `Publisher` we already have rather than inventing a second
+publish path — a dead letter is just a message, persisted onto its own subject
+on a JetStream stream, inspectable and replayable later. It doesn't retry itself
+if the dead-letter publish fails (unlike ADL 0007's `publishWithRetry`) — that's
+a real gap, but this is already a last-resort path for an already-failed
+message, and I'd rather flag that honestly than add a second layer of retry
+logic to groundwork code before either service exists.
+
+**The concrete values, given what you agreed to:**
+
+```go
+jetstream.ConsumerConfig{
+    Durable:   "depot-stores-projector",   // "baskets-stores-projector" for the other
+    AckPolicy: jetstream.AckExplicitPolicy,
+    AckWait:   5 * time.Second,
+    MaxDeliver: 5,
+    BackOff: []time.Duration{
+        5 * time.Second,
+        15 * time.Second,
+        30 * time.Second,
+        60 * time.Second,
+    },
+    // FilterSubject left empty — consumes the whole stores stream
+}
+```
+
+`len(BackOff)` is 4, `MaxDeliver` is 5 — that's deliberate: attempt 1
+(immediate) + 4 backed-off retries = 5 total attempts, so every backoff slot
+actually gets used and nothing is inconsistent between the two numbers.
+
+**Two open questions before I finalize this:**
+
+1. **Dead-letter subject convention** — I'd propose
+   `<service>.deadletter.<original-subject>` (e.g.
+   `depot.deadletter.stores.product.ProductAdded`), keeping the original subject
+   visible for triage. Reasonable, or did you have a different shape in mind?
+1. This decision (Nak-vs-NakWithDelay, MaxDeliver/BackOff pairing, the
+   dead-letter pattern) has real system-wide consequences for every future
+   consumer — worth its own ADL entry (0013) once we close out this Step, same
+   as ADL 0012 was written for the `Service` interface. Agreed, or fold it into
+   `journey_progress.md` only?
