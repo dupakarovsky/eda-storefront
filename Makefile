@@ -37,17 +37,42 @@ ps:
 include .postgres.env
 export
 
-.PHONY: migrate/up migrate/down
-migrate/up:
+.PHONY: migrate/stores/up migrate/stores/down migrate/baskets/up migrate/baskets/down migrate/depot/up migrate/depot/down 
+
+## --- Stores DB -- 
+migrate/stores/up:
 	@migrate -path stores/migrations \
-		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/storesdb?sslmode=disable" \
 		up
 
-migrate/down:
+migrate/stores/down:
 	@migrate -path stores/migrations \
-		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/$(MIGRATE_DB_NAME)?sslmode=disable" \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/storesdb?sslmode=disable" \
 		down 1
+## ----------------------------------------------------------------------------
 
+## --- Baskets DB -- 
+migrate/baskets/up:
+	@migrate -path baskets/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/basketsdb?sslmode=disable" \
+		up
+
+migrate/baskets/down:
+	@migrate -path baskets/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/basketsdb?sslmode=disable" \
+		down 1
+## ----------------------------------------------------------------------------
+
+## --- Depot DB -- 
+migrate/depot/up:
+	@migrate -path depot/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/depotdb?sslmode=disable" \
+		up
+
+migrate/depot/down:
+	@migrate -path depot/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/depotdb?sslmode=disable" \
+		down 1
 
 
 ## ============================================================================

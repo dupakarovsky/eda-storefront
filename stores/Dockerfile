@@ -42,7 +42,7 @@ WORKDIR /app
 COPY --from=builder /bin/stores ./stores
 
 # Expose the container's port 8080 for connectivity 
-EXPOSE 8008
+EXPOSE 8080
 
 # run the ./stores binary command when the container starts 
 CMD ["./stores"]

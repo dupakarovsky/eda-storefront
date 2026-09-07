@@ -456,3 +456,140 @@ actually gets used and nothing is inconsistent between the two numbers.
    consumer — worth its own ADL entry (0013) once we close out this Step, same
    as ADL 0012 was written for the `Service` interface. Agreed, or fold it into
    `journey_progress.md` only?
+
+### Step 3 — Scaffold `baskets/go.mod` and `depot/go.mod`,
+
+Good — clean container, clean health check. On to **Step 3**.
+
+Since `stores/go.mod`'s `module` line was already decoupled from its folder name
+(per ADL 0014's reasoning), I'll keep that same convention here: each module is
+named after the _service_, not the project folder that happens to contain it —
+`baskets`/`depot`, not `depot-baskets/baskets`. This keeps things consistent if
+either service ever needs to move to its own folder later (unlikely, but the
+naming shouldn't depend on that not happening).
+
+One thing that does change from `stores/go.mod`, though: **the relative path in
+the `replace` directive.** `stores/` sits directly under the workspace root, one
+level up from `foundation/` — hence `../foundation`. `baskets/` and `depot/` sit
+_inside_ `depot-baskets/`, two levels down — so the correct relative path is
+`../../foundation`. Worth being precise about now, since Step 4's Dockerfiles
+for these two services will need to mirror this same depth relationship in their
+`COPY`/`WORKDIR` layout for `go mod download` to resolve `foundation` locally
+inside the build context — flagging that dependency now so it isn't a surprise
+when we get there.
+
+```go
+// depot-baskets/baskets/go.mod
+```
+
+```go
+// depot-baskets/depot/go.mod
+```
+
+I've deliberately kept these minimal — just the `foundation` dependency, nothing
+else declared yet (no `pgx`, `connectrpc`, `nats.go`, `protobuf`).
+`stores/go.mod` accumulated those because real code was already importing them;
+here there's no code yet to justify pinning versions for dependencies that
+aren't used. Phase 3/4 will pull those in naturally via `go get` as
+domain/persistence/API code actually gets written — same "prove it needed before
+adding it" instinct as `foundation`'s own "prove it twice before extracting"
+discipline.
+
+```go
+// go.work
+```
+
+Once these three files are in place, `go build ./...` from the workspace root is
+the right check — it should succeed trivially (there's no actual Go code in
+either new module yet, so there's nothing to compile), but it does confirm the
+workspace parses correctly and both new modules resolve `foundation` via the
+local `use` mapping without hitting the network for that dependency at all.
+
+Let me know how that goes, and once confirmed we'll move to **Step 4**: empty
+`main.go` service skeletons that actually start up, connect to Postgres/NATS,
+and shut down cleanly via the `Service` interface — wired into
+`docker-compose.yaml`.
+
+That's a known quirk of `go build`'s pattern matching in workspace mode, not a
+problem with the `go.work` file itself — the root directory (`.`) isn't itself a
+module (no `go.mod` there, by design — it's just the workspace root), and the
+`./...` pattern needs to resolve _starting from_ a directory that's either a
+module itself or listed in `go.work`'s `use` block. Running the bare pattern
+from outside any module trips this specific error.
+
+The fix is just to be explicit about which module trees to build, rather than
+relying on `./...` to expand across all of them from the root:
+
+```bash
+
+```
+
+That should succeed — `foundation`, `foundation-smoketest`, and `stores` compile
+real code as before, and the two new modules should report success trivially (no
+`.go` files yet means "nothing to build" there, not an error, since a `go.mod`
+with no source files is a valid empty module).
+
+If you'd rather not type that full list every time as more services get added,
+the other common workaround is running `go vet ./...` (or `build`) from _inside_
+each module directory individually — but given this project already treats
+`Makefile` as the durable, growing interface for exactly this kind of repeated
+command (per `system-state.md`'s own description of it), it's probably worth a
+`verify`-style target there once we're past groundwork and have real code to
+check across every module at once. Not urgent for this Step — just flagging it
+as a natural fit for later rather than solving it now.
+
+Let me know how that explicit build goes, and we'll move to Step 4.
+
+### Step 4a — Postgres provisioning + .env for baskets
+
+```bash
+#!/bin/bash
+```
+
+A straight copy of `03-stores-db.sh`'s shape, just the database name changed —
+`eda_dev`/`eda_user` are instance-wide roles (created once in `02-roles.sh`, not
+per-database), so no role changes are needed here, only the new database and its
+grants.
+
+```env
+
+```
+
+I added `SRV_PORT=8081` explicitly (rather than leaving it at `config.go`'s
+`8080` default) since you'll likely want to run `baskets` locally via bare
+`go run` (mirroring `stores/run`) _alongside_ `stores` at some point — both
+defaulting to `8080` would collide the moment they're both running on your host
+at once. `DB_PASSWORD` reuses the same value as `stores/.env`, since `eda_user`
+is one shared role across every database on this Postgres instance, not a
+per-service credential.
+
+**One real gotcha to flag now, before you run anything** — this is the exact
+trap ADL 0006 already documented and named explicitly:
+`docker-entrypoint-initdb.d/` scripts (which is where `04-baskets-db.sh` needs
+to be mounted) **only run on first-time `initdb` bootstrap**. Your
+`eda-postgres` container has already been initialized — `pg-data` is a populated
+volume at this point, not a fresh one. That means simply adding this script and
+running `docker compose up` (even with the volume mount added in Step 4g) will
+**not** cause it to execute — `initdb` already happened, so Postgres skips the
+whole directory on every subsequent start, no error, no log line, just silently
+never runs.
+
+Per ADL 0006's own documented recovery path, you have two options once we get to
+Step 4g and the mount is actually in place:
+
+- **Manually replicate what the script does** — connect as `edasuper` (or via
+  `docker compose exec postgres psql -U edasuper -d edadb`) and run the same
+  `CREATE DATABASE basketsdb OWNER eda_dev;` + grants block by hand. Fast, keeps
+  your existing `storesdb` data intact.
+- **Nuke and reinit the volume** (`docker compose down -v`, then `make up`) —
+  lets every init script run fresh, including the original three plus these new
+  ones. Only worth it if you don't mind losing whatever's currently in
+  `storesdb`.
+
+I'd lean toward the manual-replication route given you likely have real test
+data in `storesdb` you don't want to lose over provisioning a sibling database —
+but that's your call, and either way it's a Step 4g concern, not something to
+act on yet since the mount itself isn't wired up.
+
+Confirm this looks right, and I'll move to **4b** —
+`baskets/cmd/service/main.go`'s HTTP skeleton and graceful shutdown wiring.

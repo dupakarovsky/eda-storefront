@@ -4,4 +4,6 @@ use (
 	./foundation
 	./foundation-smoketest
 	./stores
+	./depot-baskets/depot
+	./depot-baskets/baskets
 )
