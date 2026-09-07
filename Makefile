@@ -24,12 +24,14 @@ logs:
 logs/stores:
 	$(COMPOSE) logs stores
 
-stores/term:
+kill/stores:
 	$(COMPOSE) kill -s SIGTERM stores
 
 ps:
 	$(COMPOSE) ps
 
+exec/pg:
+	$(COMPOSE) exec postgres psql -h 127.0.0.1 -U edasuper -d edadb
 
 ## ----------------------------------------------------------------------------
 ## --- Migrations -- 

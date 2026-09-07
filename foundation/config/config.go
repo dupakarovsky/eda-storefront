@@ -30,6 +30,12 @@ type ServerConfig struct {
 	RequestTimeout    time.Duration `envconfig:"SRV_REQUEST_TIMEOUT" default:"12s"`
 }
 
+// Addr returns the joinded string of the Host and Port fields, which is
+// compatible with IPV4 and IPV6
+func (s ServerConfig) Addr() string {
+	return net.JoinHostPort(s.Host, s.Port)
+}
+
 // Logger config defines configuration params for the log's level in the terminal
 // and in the .log file
 type LoggerConfig struct {
@@ -81,10 +87,4 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
-}
-
-// Addr returns the joinded string of the Host and Port fields, which is
-// compatible with IPV4 and IPV6
-func (s ServerConfig) Addr() string {
-	return net.JoinHostPort(s.Host, s.Port)
 }

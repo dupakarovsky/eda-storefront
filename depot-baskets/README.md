@@ -457,7 +457,7 @@ actually gets used and nothing is inconsistent between the two numbers.
    as ADL 0012 was written for the `Service` interface. Agreed, or fold it into
    `journey_progress.md` only?
 
-### Step 3 — Scaffold `baskets/go.mod` and `depot/go.mod`,
+### Step 3 — Scaffold `baskets/go.mod` and `depot/go.mod`
 
 Good — clean container, clean health check. On to **Step 3**.
 
@@ -593,3 +593,84 @@ act on yet since the mount itself isn't wired up.
 
 Confirm this looks right, and I'll move to **4b** —
 `baskets/cmd/service/main.go`'s HTTP skeleton and graceful shutdown wiring.
+
+**4b — `baskets/cmd/service/main.go`.**
+
+Before the file itself, one small addition to `foundation/nats` I'd like to fold
+in here rather than duplicate: ADL 0013 already named a fixed set of "standard
+values" every future `Subscriber` should default to. Right now that's just prose
+— nothing enforces it, and writing this `main.go` would mean retyping that exact
+`ConsumerConfig` literal by hand, with `depot`'s `main.go` (4e) doing the same
+thing again right after. A small helper makes ADL 0013 something the compiler
+actually enforces, not just something a future author is trusted to remember
+correctly:
+
+```go
+// foundation/nats/consumer.go
+package foundationnats
+func StandardConsumerConfig(durable string) jetstream.ConsumerConfig {}
+```
+
+Only `Durable` varies per call site; `FilterSubject` is deliberately left unset
+(per your earlier call to consume the whole stream unfiltered). If a future
+service genuinely needs different values, it constructs its own
+`jetstream.ConsumerConfig` literal directly rather than calling this — the
+helper is a convenience for the common case, not a wall preventing deviation.
+
+Now `main.go` itself:
+
+```go
+// depot-baskets/baskets/cmd/service/main.go
+```
+
+A few things worth explaining before you run this:
+
+**`nc.Close()` is a single `defer`, not called from two branches.** ADL 0012 was
+specific that the connection gets closed "once, directly, by `main()` after
+`Run()` returns" — `defer` right after a successful `Connect()` guarantees
+exactly that regardless of whether `shutdown.Run` returns an error or `nil`,
+without needing to duplicate the close call in both an error path and a success
+path (which is itself a small bug risk — easy to add a second call site later
+and forget the first still exists).
+
+**`storesStreamName = "stores"`** — pulled directly from `CONTRACT.md`'s own
+wording ("publish onto the `stores` JetStream stream"). Worth double-checking
+against however `01-stores`' (now `stores`') actual `main.go`/`EnsureStream`
+call names it, since I'm going off the contract document's prose rather than the
+literal string constant in that service's source, which I don't have in front of
+me. If the real stream name differs even slightly (casing, etc.),
+`CreateOrUpdateConsumer` in `Subscriber.Run()` will fail immediately and loudly
+— a good, fail-fast confirmation either way, not a silent mismatch.
+
+**The placeholder handler always returns `nil`** — deliberately. It's proving
+the wiring (message arrives, gets acked, `Run`/`Shutdown` behave correctly under
+a second real listener), not exercising the backoff/dead-letter path. That path
+already has its own ADL and can be tested for real once `depot`/`baskets` have
+actual handlers with actual failure modes in Phase 3/4, per the testing note we
+already added there.
+
+Try `go build ./depot-baskets/baskets/...` first (should now report real
+compiled packages, not the "matched no packages" warning from Step 3), and let
+me know how it goes before you attempt to actually run it against the live
+containers — running it will also need `NATS_NAME` etc. already correctly set in
+`baskets/.env`, which you've already got from Step 4a.
+
+#### Corrections
+
+**2. A real semantic bug underneath the syntax one: the `Subscriber` is wired to the wrong stream.**
+
+Look at what `StreamName` actually means in this file — it's defined right above as `"baskets"`, `EnsureStream`'d as baskets' own _outgoing_ stream (for `BasketCheckedOut` etc., once Phase 3 needs it), with subjects `baskets.basket.*`. But the whole point of this `Subscriber` — per `journey_progress.md`'s own description, "`Store`/`Product` cache projector consuming `stores`' events" — is to consume the **`stores`** stream, the one `01-stores` (now `stores`) already created and owns. Passing `StreamName` (`"baskets"`) into `NewSubscriber` means it would try to attach a consumer to `baskets`' own empty stream and wait forever for events that will never arrive there — `stores`' events are on a completely different stream it never touches.
+
+These two streams need to stay clearly distinct in this file — one you _ensure_ (yours), one you only _reference by name_ (someone else's, already ensured by `stores`' own `main`/`module` at its own startup):
+
+```go
+// depot-baskets/baskets/module.go
+
+```
+
+```go
+// depot-baskets/baskets/module.go
+
+```
+
+Worth being deliberate here since it's easy to get backwards: `baskets` **ensures** `baskets` (it owns that stream — nobody else will create it), and **only references** `stores` by name (it doesn't own that stream, isn't responsible for its existence, and would get a clear, loud `CreateOrUpdateConsumer` error at startup if `stores` hasn't ensured it yet — a legitimate, if slightly fragile, implicit ordering dependency worth remembering once `docker-compose.yaml`'s `depends_on` is wired in Step 4g).

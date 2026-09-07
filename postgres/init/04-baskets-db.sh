@@ -7,6 +7,12 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     CREATE DATABASE basketsdb OWNER eda_dev;
 EOSQL
 
+# -------------------------------------------------------------------
+#  LOGOUT OF edba before executing the next command
+#  otherwise we'll be grandint privileges to the public schema of the
+#  edadb database
+# -------------------------------------------------------------------
+
 # Connect to postgres in the container as "edasuper"
 # Grant connect privileges to both "eda_dev" and "ead_user" to the new database
 # Grant the create command on the public schema only to "eda_dev".

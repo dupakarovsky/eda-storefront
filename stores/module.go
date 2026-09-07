@@ -120,6 +120,9 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 
 	logger.Info("🌊 stream ensured", "name", storesevents.StreamName, "subjects", storesevents.StreamSubjects)
 
+	// Publisher initialization
+	//----------------------------------------------------------------------------
+
 	// instantiate a new publisher to publish to the jetstream
 	publisher := foundationnats.NewPublisher(js)
 

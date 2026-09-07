@@ -60,9 +60,10 @@ func NewSubscriber(
 	}
 }
 
-func (s *Subscriber) WithDefaultConsumerConfigBackoff() {
-
+// StandardConsumerConfig returns a preconfigure ConsumerConfig
+func StandardConsumerConfig(durable string) jetstream.ConsumerConfig {
 	config := jetstream.ConsumerConfig{
+		Durable:    durable,
 		AckPolicy:  jetstream.AckExplicitPolicy,
 		AckWait:    5 * time.Second,
 		MaxDeliver: 5,
@@ -75,7 +76,7 @@ func (s *Subscriber) WithDefaultConsumerConfigBackoff() {
 		// FilterSubject left empty — consumes the whole stores stream
 	}
 
-	s.consumerCfg = config
+	return config
 	// FilterSubject left empty — consumes the whole stores stream
 }
 

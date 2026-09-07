@@ -43,6 +43,7 @@ func main() {
 	mod, err := stores.New(ctx, cfg, logger)
 	if err != nil {
 		logger.Error("failed to initialize module", "error", err)
+		os.Exit(1)
 	}
 	defer mod.Close()
 
