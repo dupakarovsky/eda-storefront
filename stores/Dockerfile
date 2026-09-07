@@ -14,8 +14,8 @@ COPY foundation/ ./foundation
 # /workspace/stores folder
 COPY stores/ ./stores
 
-# redefine the current working directory as /workspace/01-stores
-WORKDIR /workspace/01-stores
+# redefine the current working directory as /workspace/stores
+WORKDIR /workspace/stores
 
 # download the dependencies listed in go.mod
 RUN go mod download
@@ -23,7 +23,7 @@ RUN go mod download
 # Disable the C library for go. This will force the go compiler to 
 # build without C dependencies. Runs the builder to build the binary 
 # from the container's ./cmd/service package and place it in
-# (/workspace/01-stores/bin/stores)
+# (/workspace/stores/bin/stores)
 RUN CGO_ENABLED=0 GOOS=linux go build -o /bin/stores ./cmd/service
 
 # === 2ND STAGE ===

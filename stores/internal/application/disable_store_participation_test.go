@@ -1,4 +1,3 @@
-// 01-stores/internal/application/disable_store_participation_test.go
 package application_test
 
 import (

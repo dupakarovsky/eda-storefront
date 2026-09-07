@@ -142,7 +142,7 @@ happen.
 ConnectRPC, served at `/stores.v1.StoresService/<Method>`, supporting both
 real gRPC and Connect's own HTTP+JSON protocol (the latter requires a
 `Connect-Protocol-Version: 1` header). All eleven methods below are live and
-verified — see `01-stores/storespb/api.proto` for exact message shapes.
+verified — see `stores/storespb/api.proto` for exact message shapes.
 IDs are server-generated (UUID) on creation, never client-supplied.
 
 | Method                      | Request → Response                                        | Notes                                                                                                                                                                                                                                          |

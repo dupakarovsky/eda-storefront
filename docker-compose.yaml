@@ -43,11 +43,11 @@ services:
     stores:
         build:
             context: .
-            dockerfile: 01-stores/Dockerfile
+            dockerfile: stores/Dockerfile
         container_name: eda-stores
         restart: unless-stopped
         env_file:
-            - ./01-stores/.env
+            - ./stores/.env
         # override these values from env_file. These values will
         # be applied for the docker container (the .env files have
         # the values for the operating in the local environment)

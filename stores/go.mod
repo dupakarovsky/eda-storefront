@@ -26,6 +26,6 @@ require (
 	golang.org/x/text v0.35.0 // indirect
 )
 
-// 01-stores/go.mod
+// tores/go.mod
 // whenever anything asks for this module, use the local directory ../foundation, don't go looking anywhere else"
 replace github.com/dupakarovsky/eda-storefront/foundation => ../foundation

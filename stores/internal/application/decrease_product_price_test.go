@@ -1,4 +1,3 @@
-// 01-stores/internal/application/decrease_product_price_test.go
 package application_test
 
 import (

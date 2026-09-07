@@ -1,4 +1,3 @@
-// 01-stores/internal/postgres/txcontext.go
 package postgres
 
 import "context"

@@ -33,7 +33,7 @@ type ServerConfig struct {
 // Logger config defines configuration params for the log's level in the terminal
 // and in the .log file
 type LoggerConfig struct {
-	FilePath  string `envconfig:"LOG_FILE_PATH" default:"stores.log"`
+	FilePath  string `envconfig:"LOG_FILE_PATH" default:""`
 	FileLevel string `envconfig:"LOG_FILE_LEVEL" default:"info"`
 	TermLevel string `envconfig:"LOG_TERM_LEVEL" default:"debug"`
 }
@@ -57,7 +57,7 @@ type DBConfig struct {
 // URL should be the same as the docker-compose file
 type NATSConfig struct {
 	URL            string        `envconfig:"NATS_URL" default:"nats://127.0.0.1:4223"`
-	Name           string        `envconfig:"NATS_NAME" default:"foundation-smoketest"`
+	Name           string        `envconfig:"NATS_NAME"`
 	ConnectTimeout time.Duration `envconfig:"NATS_CONNECT_TIMEOUT" default:"5s"`
 	MaxReconnects  int           `envconfig:"NATS_MAX_RECONNECTS" default:"5"`
 	ReconnectWait  time.Duration `envconfig:"NATS_RECONNECT_WAIT" default:"2s"`

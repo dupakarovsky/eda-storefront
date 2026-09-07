@@ -19,7 +19,7 @@ func loadRealEnv(t *testing.T) {
 
 	//
 	if err := godotenv.Load("../../.env"); err != nil {
-		t.Fatalf("failed to load 01-stores/.env: %v", err)
+		t.Fatalf("failed to load stores/.env: %v", err)
 	}
 }
 

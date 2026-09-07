@@ -1,4 +1,4 @@
--- 01-stores/migrations/0001_create_stores_and_products.up.sql
+-- stores/migrations/0001_create_stores_and_products.up.sql
 CREATE TABLE stores (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

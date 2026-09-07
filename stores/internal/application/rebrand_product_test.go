@@ -1,4 +1,3 @@
-// 01-stores/internal/application/rebrand_product_test.go
 package application_test
 
 import (

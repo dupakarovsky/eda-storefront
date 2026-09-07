@@ -1,4 +1,3 @@
-// 01-stores/internal/application/remove_product_test.go
 package application_test
 
 import (
