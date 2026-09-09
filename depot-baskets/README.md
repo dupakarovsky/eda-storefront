@@ -655,13 +655,25 @@ me know how it goes before you attempt to actually run it against the live
 containers — running it will also need `NATS_NAME` etc. already correctly set in
 `baskets/.env`, which you've already got from Step 4a.
 
-#### Corrections
+#### EndureStream
 
-**2. A real semantic bug underneath the syntax one: the `Subscriber` is wired to the wrong stream.**
+**2. A real semantic bug underneath the syntax one: the `Subscriber` is wired to
+the wrong stream.**
 
-Look at what `StreamName` actually means in this file — it's defined right above as `"baskets"`, `EnsureStream`'d as baskets' own _outgoing_ stream (for `BasketCheckedOut` etc., once Phase 3 needs it), with subjects `baskets.basket.*`. But the whole point of this `Subscriber` — per `journey_progress.md`'s own description, "`Store`/`Product` cache projector consuming `stores`' events" — is to consume the **`stores`** stream, the one `01-stores` (now `stores`) already created and owns. Passing `StreamName` (`"baskets"`) into `NewSubscriber` means it would try to attach a consumer to `baskets`' own empty stream and wait forever for events that will never arrive there — `stores`' events are on a completely different stream it never touches.
+Look at what `StreamName` actually means in this file — it's defined right above
+as `"baskets"`, `EnsureStream`'d as baskets' own _outgoing_ stream (for
+`BasketCheckedOut` etc., once Phase 3 needs it), with subjects
+`baskets.basket.*`. But the whole point of this `Subscriber` — per
+`journey_progress.md`'s own description, "`Store`/`Product` cache projector
+consuming `stores`' events" — is to consume the **`stores`** stream, the one
+`01-stores` (now `stores`) already created and owns. Passing `StreamName`
+(`"baskets"`) into `NewSubscriber` means it would try to attach a consumer to
+`baskets`' own empty stream and wait forever for events that will never arrive
+there — `stores`' events are on a completely different stream it never touches.
 
-These two streams need to stay clearly distinct in this file — one you _ensure_ (yours), one you only _reference by name_ (someone else's, already ensured by `stores`' own `main`/`module` at its own startup):
+These two streams need to stay clearly distinct in this file — one you _ensure_
+(yours), one you only _reference by name_ (someone else's, already ensured by
+`stores`' own `main`/`module` at its own startup):
 
 ```go
 // depot-baskets/baskets/module.go
@@ -673,4 +685,225 @@ These two streams need to stay clearly distinct in this file — one you _ensure
 
 ```
 
-Worth being deliberate here since it's easy to get backwards: `baskets` **ensures** `baskets` (it owns that stream — nobody else will create it), and **only references** `stores` by name (it doesn't own that stream, isn't responsible for its existence, and would get a clear, loud `CreateOrUpdateConsumer` error at startup if `stores` hasn't ensured it yet — a legitimate, if slightly fragile, implicit ordering dependency worth remembering once `docker-compose.yaml`'s `depends_on` is wired in Step 4g).
+Worth being deliberate here since it's easy to get backwards: `baskets`
+**ensures** `baskets` (it owns that stream — nobody else will create it), and
+**only references** `stores` by name (it doesn't own that stream, isn't
+responsible for its existence, and would get a clear, loud
+`CreateOrUpdateConsumer` error at startup if `stores` hasn't ensured it yet — a
+legitimate, if slightly fragile, implicit ordering dependency worth remembering
+once `docker-compose.yaml`'s `depends_on` is wired in Step 4g).
+
+#### Events Replay on first Durable Consumer
+
+That flood of replayed events is actually the correct and expected behavior, not
+a surprise bug — and it's genuinely useful to have witnessed it directly rather
+than just read about it in the JetStream docs.
+
+**Why it happened:** `baskets-stores-projector` is a _brand-new_ durable
+consumer name — this is the very first moment it's ever existed. JetStream
+consumers default to `DeliverAllPolicy` when no `DeliverPolicy` is explicitly
+set (which ours doesn't), meaning a fresh durable consumer starts by replaying
+**every retained message currently on the stream**, from the beginning, before
+it ever catches up to "live." Since `stores`' stream has been accumulating
+events since Phase 3/4 of that project's own testing, `baskets` — the moment it
+first attached — received the entire history in one burst. That's JetStream's
+durability guarantee working exactly as advertised, and it's a direct, concrete
+demonstration of something ADL 0003 named as a reason to pick JetStream over
+core NATS in the first place: durable, replayable streams. You just replayed one
+for real.
+
+This also matters for Phase 3: it confirms the "idempotent cache upsert"
+requirement `journey_progress.md` already flagged isn't a theoretical nicety —
+it's load-bearing from the very first startup. Any real handler will need to
+treat a `StoreCreated` for an already-known store ID as a normal, expected case,
+not an edge case, since a consumer restart or a redeployment could replay
+history again under certain conditions (e.g. if the durable consumer itself were
+ever deleted and recreated).
+
+One consequence worth knowing now, before it confuses you later: **this replay
+won't happen again** on subsequent runs of `baskets`. JetStream persisted
+`baskets-stores-projector`'s delivery cursor server-side the moment those
+messages were acked — next time you start `baskets`, it'll resume from where it
+left off (live events only), not replay history again. If you ever want to force
+a full replay again for testing, you'd need to delete that specific consumer
+server-side (`nats consumer rm stores baskets-stores-projector`, or via the
+JetStream API) — not something to do casually once real cache data depends on
+it, but worth knowing it's possible.
+
+Content-type fix — good call removing it rather than fixing the JSON body to
+match; a bare `"ok"` text response for a health check doesn't need to masquerade
+as JSON.
+
+Two things left to actually close out 4c:
+
+1. **The live single-event test** — the second curl command, so we see one new
+   `StoreCreated` arrive on its own, distinct from the historical flood,
+   confirming ongoing (not just historical) delivery works:
+
+```bash
+curl -X POST localhost:8080/stores.v1.StoresService/CreateStore \
+  -H "Content-Type: application/json" \
+  -H "Connect-Protocol-Version: 1" \
+  -d '{"name": "Test Store", "location": "Test Location"}'
+```
+
+2. **The shutdown test** — `Ctrl+C` the running `baskets` process and paste the
+   tail of the log output. I want to specifically see whether `Drain()`
+   completing (via `cc.Closed()`) actually gates `Run()`'s return, or whether it
+   returns instantly — that's the real, first-ever proof of ADL 0012's
+   two-listener concurrent-shutdown-broadcast design against a genuine second
+   `Service`, not the synthetic test harness from Phase 1.
+
+#### Shutdown Sequence Race
+
+Both results are exactly what should happen — and the second one (the shutdown
+ordering) is genuinely interesting, worth a careful read rather than a quick
+"looks fine."
+
+**The live event** — clean, single `StoreCreated` arriving well after the
+historical replay, confirming ongoing delivery works independently from the
+backlog-catch-up we saw earlier. That's 4c's core proof point, done.
+
+**The shutdown log** — read the ordering carefully, because there's a subtlety
+here that looks like it could be a bug but isn't:
+
+```
+1. WARN  shutdown signal received
+2. INFO  service goroutine has exited  service=BASKETS-HTTP
+3. INFO  shutdown complete
+4. INFO  service goroutine has exited  service=BASKETS-STORES-PROJECTOR
+```
+
+Notice: **"shutdown complete" (line 3) prints _before_ the subscriber's own
+"goroutine has exited" (line 4).** At first glance that looks backwards — how
+can shutdown be "complete" while a service's `Run()` goroutine hasn't logged its
+own exit yet? It's not a bug, but it does expose something worth understanding
+precisely, because it's a real property of this design, not an illusion.
+
+Trace the actual causality: when `cc.Closed()` fires inside
+`Subscriber.Shutdown(ctx)`, it calls `markDone()` (closing `s.done`) and then
+returns `nil`. That single channel-close event has **two independent downstream
+effects, on two different goroutines, with no ordering guaranteed between
+them**:
+
+- The goroutine running `Shutdown(ctx)` itself (spawned by `shutdown.Run`'s
+  broadcast loop) proceeds past the `return nil`, its `defer wg.Done()` fires,
+  and once _both_ services' `Shutdown` calls have done the same, `wg.Wait()`
+  unblocks and `"shutdown complete"` gets logged — this is what we saw as line
+  3\.
+- Completely separately, the _original_ goroutine sitting on `<-s.done` inside
+  `Run()` wakes up because that same channel just closed, returns `nil`, and
+  only _then_ does its enclosing goroutine log `"service goroutine has exited"`
+  — line 4.
+
+Both are legitimate, correct consequences of the exact same event (`s.done`
+closing) — but they're two different goroutines racing to log, and Go's
+scheduler gives no guarantee about which one gets there first. `BASKETS-HTTP`
+happened to log its exit _before_ "shutdown complete" purely because
+`http.Server.Shutdown()` on an idle server returns almost instantly; the
+subscriber's version of that same log line just happened to lose the race this
+particular run. Run it again and you might well see the opposite ordering, or
+all four lines in yet another sequence — it's non-deterministic, and that's
+fine, because nothing downstream depends on this specific ordering. By the time
+`"shutdown complete"` is logged, both `Shutdown()` calls have genuinely, fully
+returned — which is the only guarantee `shutdown.Run`'s contract actually makes.
+The stray `Run()`-exit log line arriving a beat later is just a cosmetic side
+effect of logging from a goroutine that has nothing left to do at that point but
+say so.
+
+Worth being certain there's no real risk hiding here: `main()`'s
+`defer nc.Close()` only executes once `shutdown.Run` itself returns to `main`,
+which is _after_ `wg.Wait()` unblocks — so no chance of `nc.Close()` racing
+against a subscriber goroutine that's still meaningfully touching the NATS
+connection. By the time `cc.Closed()` fires, draining is already fully finished;
+everything after that in `Run()` is just an inert channel receive and a log
+line, with no further NATS interaction to race against.
+
+This is worth a line in `journey_progress.md`'s eventual Phase 2 write-up — same
+spirit as Phase 1's "concurrent vs. sequential shutdown broadcast" lesson:
+**"shutdown complete" logging only proves every `Shutdown()` call returned, not
+that every `Run()` goroutine has finished logging its own exit — those are two
+independent happens-before chains sharing one root cause, not one ordered
+sequence.** Good one to have actually witnessed rather than just accepted from
+the ADL's prose.
+
+**4c is done** — HTTP, Postgres, NATS, historical replay, live delivery, and
+graceful shutdown all confirmed against a real running process. That's
+`depot`/`baskets` no longer relying on Phase 1's synthetic test alone; the real
+two-listener contract is now proven end-to-end.
+
+Ready for **4d–4f** (the same sequence for `depot`) — given how closely
+`baskets` and `depot` mirror each other structurally, would you rather I draft
+`depot`'s `module.go`/`main.go`/`http-health.go` directly (adapted for `depot`'s
+own naming — `depot-stores-projector`, `depotdb`, port `8082`, etc.), or would
+you prefer to write the first pass yourself this time and have me review it the
+way we did with `baskets`?
+
+### Step 4g - Dockerfiles
+
+Good — same shutdown ordering pattern as `baskets` (HTTP goroutine exit, then
+"shutdown complete," then subscriber goroutine exit, all racing the same way for
+the same reason). Consistent, expected, no new bugs there.
+
+Here's **4g**.
+
+**Dockerfiles** — same two-stage shape as `stores`', with paths adjusted for the
+nested `depot-baskets/` location. Remember the go.mod `replace` directive is
+`../../foundation` (two levels up), so the container's copy structure needs to
+preserve that same relative depth:
+
+```dockerfile
+
+```
+
+Both `EXPOSE 8080` — correct and consistent with `stores`' now-fixed value,
+since this is the container-_internal_ port; distinguishing
+`baskets`/`depot`/`stores` on the host side is `docker-compose.yaml`'s job via
+the `ports:` mapping, not the Dockerfile's.
+
+**One thing worth catching before it becomes a confusing runtime surprise:**
+`baskets/.env` and `depot/.env` explicitly set `SRV_PORT=8081`/`8082` —
+correctly, for _local_ `make baskets/run`/`make depot/run`, where all three
+services share one host network namespace and would collide on `8080` otherwise.
+But inside a container, each service is alone in its own network namespace —
+there's no collision to avoid, and the Dockerfile's `EXPOSE 8080` plus the
+compose `ports:` mapping already assumes the process listens on `8080`
+internally. Left unoverridden, `env_file` would carry `SRV_PORT=8081` straight
+into the container, the process would bind `:8081`, and the compose `ports:`
+mapping (`8081:8080`) would point at a port nothing's listening on. So both
+service blocks need an explicit `SRV_PORT: '8080'` override in `environment:`,
+the same way `stores` already overrides
+`DB_HOST`/`DB_PORT`/`NATS_URL`/`LOG_FILE_PATH` — for exactly the same reason:
+values in `.env` are tuned for bare-metal local iteration, and the container
+needs its own, separately-correct set.
+
+**`docker-compose.yaml` additions:**
+
+```yaml
+# docker-compose.yaml — postgres service, volumes: list
+```
+
+```yaml
+# docker-compose.yaml — new service blocks, alongside stores
+```
+
+`depends_on: stores: condition: service_started` gives correct start _ordering_
+(compose won't even attempt to start `baskets`/`depot` until `stores`' container
+process has launched) — it doesn't guarantee `stores` has finished
+`EnsureStream`-ing by that point, which is the race you've already confirmed is
+acceptable for now. Worth a one-line note in `journey_progress.md` alongside
+that decision so it isn't accidentally rediscovered as a "new" concern in Phase
+5's integration pass.
+
+Before running `make build`/`make up` against all five containers together: same
+volume caveat as before applies to the two new init script mounts — they're
+correctly wired for any _future_ full reinit, but since `pg-data` is already
+initialized, they won't execute against your current running instance (your
+manually-provisioned `basketsdb`/`depotdb` grants already stand in for that).
+Nothing to do about that now, just don't be surprised if you don't see them fire
+in the postgres container's logs.
+
+Try `make build` then `make up` then `make ps`, and confirm all five containers
+(`postgres`, `nats`, `stores`, `baskets`, `depot`) report healthy/running, plus
+a `/health` curl against `8081` and `8082` — that's the real proof this step is
+done, and closes out Phase 2 entirely.

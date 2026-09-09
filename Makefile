@@ -15,6 +15,7 @@ up:
 down:
 	$(COMPOSE) down 
 
+# build all services from their Dockerfiles
 build:
 	$(COMPOSE) build
 
@@ -99,6 +100,20 @@ stores/run:
 	GOOS=linux GOARCH=amd64 go build -o=./stores/bin/stores ./stores/cmd/service/
 	chmod +x ./stores/bin/stores
 	cd ./stores && ./bin/stores
+
+baskets/run:
+	@echo 'Running baskets service...'
+	@mkdir -p ./depot-baskets/baskets/bin
+	GOOS=linux GOARCH=amd64 go build -o=./depot-baskets/baskets/bin/baskets ./depot-baskets/baskets/cmd/service/
+	chmod +x ./depot-baskets/baskets/bin/baskets
+	cd ./depot-baskets/baskets && ./bin/baskets
+
+depot/run:
+	@echo 'Running depot service...'
+	@mkdir -p ./depot-baskets/depot/bin
+	GOOS=linux GOARCH=amd64 go build -o=./depot-baskets/depot/bin/depot ./depot-baskets/depot/cmd/service/
+	chmod +x ./depot-baskets/depot/bin/depot
+	cd ./depot-baskets/depot && ./bin/depot
 
 ## ----------------------------------------------------------------------------
 ## -- database access ---

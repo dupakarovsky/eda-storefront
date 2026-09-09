@@ -67,7 +67,7 @@ func main() {
 	router.Handle("GET /health", healthHTTPHandler(mod))
 
 	// RPC endpoint will be added later
-	// path, connectHandler := storespbconnect.NewStoresServiceHandler(mod.ConnectServer)
+	// path, connectHandler := basketspbconnect.NewBasketsServiceHandler(mod.ConnectServer)
 	// router.Handle(path, connectHandler.ServeHTTP)
 
 	// attach the the routes to the router to recieve the handler
@@ -89,8 +89,8 @@ func main() {
 	// intializes a new httpService for stores
 	basketsHTTPService := foundationshutdown.NewHTTPService("BASKETS-HTTP", logger, srv)
 
-	// start the server and shutdown monitoring
+	// start all services and shutdown monitoring
 	if err := foundationshutdown.Run(logger, cfg.Server.ShutdownTimeout, basketsHTTPService, mod.Subscriber); err != nil {
-		logger.Error("server exited with error", "error", err)
+		logger.Error("server exited with error", "error", err, "service", basketsHTTPService.Name())
 	}
 }

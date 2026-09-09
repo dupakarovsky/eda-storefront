@@ -82,7 +82,7 @@ func main() {
 	//============================================================================
 
 	// intializes a new httpService for stores
-	storesHTTPService := foundationshutdown.NewHTTPService("STORES", logger, srv)
+	storesHTTPService := foundationshutdown.NewHTTPService("STORES-HTTP", logger, srv)
 
 	if err := foundationshutdown.Run(logger, cfg.Server.ShutdownTimeout, storesHTTPService); err != nil {
 		logger.Error("server exited with error", "error", err)

@@ -33,8 +33,6 @@ func healthHTTPHandler(mod *baskets.Module) http.HandlerFunc {
 		// passed here both postgres and nats have responded
 		// -------------------------------------------------
 
-		// Add the the content-type header
-		w.Header().Set("content-type", "application/json")
 		// write the status code
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
