@@ -907,3 +907,55 @@ Try `make build` then `make up` then `make ps`, and confirm all five containers
 (`postgres`, `nats`, `stores`, `baskets`, `depot`) report healthy/running, plus
 a `/health` curl against `8081` and `8082` — that's the real proof this step is
 done, and closes out Phase 2 entirely.
+
+### Phase 3
+
+**Phase 3 scope** (from `journey_progress.md`'s original plan): `baskets` —
+`Basket`/`Item` domain, the `Store`/`Product` cache projector replacing the
+current placeholder, ConnectRPC (`StartBasket`, `AddItem`, `RemoveItem`,
+`Checkout`, `CancelBasket`, `GetBasket`), publishing `BasketCheckedOut` (+
+lifecycle events). Full cross-service integration verification and
+`CONTRACT.md`/`system-state.md` close-out is Phase 5, once `depot` also exists —
+so Phase 3 ends with `baskets` fully working and independently verified, not a
+full system close-out.
+
+Here's how I'd like to break Phase 3 into Steps — matching the order
+`journey_progress.md`'s "Carried Into Phase 3" note explicitly called for
+(projector before domain):
+
+**Step 1 — Store/Product cache projector.** Migration for
+`store_cache`/`product_cache` tables, replacing `baskets`' placeholder NATS
+handler with real idempotent upsert logic keyed off
+`stores.store.*`/`stores.product.*` subjects.
+
+**Step 2 — `Basket`/`Item` domain aggregate.** Lifecycle (started → items
+added/removed → checked out or cancelled), current-state model per ADL 0002,
+business rules (e.g. no mutation after checkout).
+
+**Step 3 — `BasketRepository` (Postgres).** Migration for the
+`baskets`/`basket_items` tables, `Load`/`Save`, and a deliberate per-aggregate
+concurrency choice (row-lock vs. optimistic version column — I'll walk through
+why one fits `Basket`'s write pattern better before we pick, same as ADL 0002
+asks).
+
+**Step 4 — Application layer, command side.** `StartBasket`, `AddItem`,
+`RemoveItem`, `CancelBasket`, `Checkout` — each validating against the cached
+`Store`/`Product` data from Step 1, saving via the Step 3 repository, and
+publishing the corresponding event with the existing retry-with-backoff helper
+(ADL 0007).
+
+**Step 5 — Application layer, query side.** `GetBasket`, following ADL 0008's
+rule that even a pure read routes through `application`, never
+repository-direct.
+
+**Step 6 — ConnectRPC surface.** `basketspb/api.proto`, generated code,
+`connectapi.Server` wiring all six RPCs into the router, server-generated
+basket/item IDs per ADL 0009.
+
+**Step 7 — Wiring and verification.** Update `baskets`' `Module`/`main.go` to
+use the real pieces instead of the placeholder, migrations run, then you verify
+end-to-end against live containers (create a store/product via `stores`, confirm
+`baskets`' cache picks it up, then exercise the full basket lifecycle via curl).
+
+Let me know if you'd like to adjust that breakdown, and once it's approved I'll
+start on Step 1.
