@@ -56,12 +56,12 @@ migrate/stores/down:
 
 ## --- Baskets DB -- 
 migrate/baskets/up:
-	@migrate -path baskets/migrations \
+	@migrate -path depot-baskets/baskets/migrations \
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/basketsdb?sslmode=disable" \
 		up
 
 migrate/baskets/down:
-	@migrate -path baskets/migrations \
+	@migrate -path depot-baskets/baskets/migrations \
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/basketsdb?sslmode=disable" \
 		down 1
 ## ----------------------------------------------------------------------------
@@ -122,6 +122,11 @@ depot/run:
 # connect to the storesdb as the edb_dev user
 storesdb/dev:
 	psql -h 127.0.0.1 -p 5433 -d storesdb -U eda_dev
+
+.PHONY: basketsdb/dev
+# connect to the storesdb as the edb_dev user
+basketsdb/dev:
+	psql -h 127.0.0.1 -p 5433 -d basketsdb -U eda_dev
 
 ## ----------------------------------------------------------------------------
 ## --- uttilities -- 

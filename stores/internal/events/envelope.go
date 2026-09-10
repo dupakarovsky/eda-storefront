@@ -28,6 +28,7 @@ func NewEnvelope(event domain.Event) (Envelope, error) {
 	// then marshal the payload into JSON bytes
 	data, err := json.Marshal(payload)
 	if err != nil {
+		return Envelope{}, fmt.Errorf("marshaling envelope for %q: %w", event.EventName(), err)
 	}
 
 	// construct the Envelope type with Data carried the Payload type as JSON bytes.

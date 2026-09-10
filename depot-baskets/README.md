@@ -908,54 +908,108 @@ Try `make build` then `make up` then `make ps`, and confirm all five containers
 a `/health` curl against `8081` and `8082` — that's the real proof this step is
 done, and closes out Phase 2 entirely.
 
-### Phase 3
+### **Phase 3 — `baskets`**
 
-**Phase 3 scope** (from `journey_progress.md`'s original plan): `baskets` —
-`Basket`/`Item` domain, the `Store`/`Product` cache projector replacing the
-current placeholder, ConnectRPC (`StartBasket`, `AddItem`, `RemoveItem`,
-`Checkout`, `CancelBasket`, `GetBasket`), publishing `BasketCheckedOut` (+
-lifecycle events). Full cross-service integration verification and
-`CONTRACT.md`/`system-state.md` close-out is Phase 5, once `depot` also exists —
-so Phase 3 ends with `baskets` fully working and independently verified, not a
-full system close-out.
+1. `Basket`/`Item` domain aggregate — _in progress, this Step_
+1. Domain tests (`basket_test.go`) — mirroring `store_test.go`'s coverage:
+   constructor validation, each guard/error path, event emission per transition
+1. `events` package — envelope/payload/subject/stream for `Basket`'s five
+   published events, following `stores/internal/events`' exact shape
+1. `catalog` package — plain `Store`/`Product` read-model structs + repository
+   interface (per our earlier decision: separate from `domain`, no invariants,
+   writer is the projector, reader is `application`)
+1. `postgres` package — `BasketRepository`
+   (`WithLock`/`FindByIDForUpdate`/`Save`/`FindByID`, same pattern as
+   `stores_repository.go`) and `CatalogRepository` (upsert-oriented, simpler —
+   no `WithLock` needed since projections aren't user-driven concurrent writes)
+1. `application` layer — `StartBasket`, `AddItem`, `RemoveItem`, `Checkout`,
+   `CancelBasket`, `GetBasket` use cases, plus the real catalog-projection
+   handler replacing `bsk_module.go`'s current `placeholderHandler`
+1. `connectapi` — proto definition, RPC server wiring, error mapping (404/400,
+   per `stores`' convention)
+1. Integration & close-out — live verification against real
+   `stores`/Postgres/NATS, `CONTRACT.md`, `system-state.md` update
 
-Here's how I'd like to break Phase 3 into Steps — matching the order
-`journey_progress.md`'s "Carried Into Phase 3" note explicitly called for
-(projector before domain):
+This is `baskets` only — `depot`'s `ShoppingList` is still Phase 4, unchanged
+from `journey_progress.md`'s original outline.
 
-**Step 1 — Store/Product cache projector.** Migration for
-`store_cache`/`product_cache` tables, replacing `baskets`' placeholder NATS
-handler with real idempotent upsert logic keyed off
-`stores.store.*`/`stores.product.*` subjects.
+Does this breakdown look right, or is there a Step you'd split further, merge,
+or reorder before I fix the collision above and we close out Step 1?
 
-**Step 2 — `Basket`/`Item` domain aggregate.** Lifecycle (started → items
-added/removed → checked out or cancelled), current-state model per ADL 0002,
-business rules (e.g. no mutation after checkout).
+### STep 1
 
-**Step 3 — `BasketRepository` (Postgres).** Migration for the
-`baskets`/`basket_items` tables, `Load`/`Save`, and a deliberate per-aggregate
-concurrency choice (row-lock vs. optimistic version column — I'll walk through
-why one fits `Basket`'s write pattern better before we pick, same as ADL 0002
-asks).
+Here's `basket_test.go`, following `store_test.go`'s structure — one `Test*`
+function per aggregate method, `t.Run` subtests for each success/error path, and
+one shared constructor helper:
 
-**Step 4 — Application layer, command side.** `StartBasket`, `AddItem`,
-`RemoveItem`, `CancelBasket`, `Checkout` — each validating against the cached
-`Store`/`Product` data from Step 1, saving via the Step 3 repository, and
-publishing the corresponding event with the existing retry-with-backoff helper
-(ADL 0007).
+```go
+// baskets/internal/domain/basket_test.go
+```
 
-**Step 5 — Application layer, query side.** `GetBasket`, following ADL 0008's
-rule that even a pure read routes through `application`, never
-repository-direct.
+Coverage mirrors `store_test.go`'s density: every guard branch in `basket.go`
+has a corresponding test (blank ID isn't tested since `NewBasket` doesn't
+validate it — same as `Store`, which only validates `name`/`location`, not `id`,
+since ID validity is the caller's/`connectapi`'s concern per ADL 0009).
 
-**Step 6 — ConnectRPC surface.** `basketspb/api.proto`, generated code,
-`connectapi.Server` wiring all six RPCs into the router, server-generated
-basket/item IDs per ADL 0009.
+One thing to flag before you run it: `RemoveItem`'s quantity-decrement test and
+the "checked out" test both call `Checkout()` internally to reach that state,
+which means those specific subtests are silently depending on `Checkout` already
+working correctly — if `Checkout` itself had a bug, it could mask or distort a
+`RemoveItem` test's real failure. `store_test.go` has this same characteristic
+(its participation tests depend on `EnableParticipation` to reach the "already
+enabled" state), so it's consistent with the existing convention, not a new risk
+— just worth knowing about if a `RemoveItem` failure ever looks confusing at
+first glance.
 
-**Step 7 — Wiring and verification.** Update `baskets`' `Module`/`main.go` to
-use the real pieces instead of the placeholder, migrations run, then you verify
-end-to-end against live containers (create a store/product via `stores`, confirm
-`baskets`' cache picks it up, then exercise the full basket lifecycle via curl).
+Drop this alongside `basket.go`/`events.go`/`basket_repository.go` and run
+`go test ./internal/domain/...` from `depot-baskets/baskets`. Let me know what
+comes back.
 
-Let me know if you'd like to adjust that breakdown, and once it's approved I'll
-start on Step 1.
+### Step 2
+
+Here's the `events` package for `baskets`, following the four-file split
+(`envelope.go`, `payload.go`, `subject.go`, `stream.go`):
+
+```go
+
+```
+
+```go
+
+```
+
+```go
+
+```
+
+Two things worth flagging rather than silently carrying forward.
+
+First, `stores/internal/events/envelope.go`'s `NewEnvelope` has a real bug you
+may want to backport a fix for: `data, err := json.Marshal(payload)` is followed
+by `if err != nil { }` — an empty block that swallows the error and falls
+through to construct the `Envelope` anyway, with `Data` left as whatever
+partial/zero value `json.Marshal` returned. I did _not_ replicate that here —
+`baskets`' version above returns a wrapped error immediately, matching the
+`Marshal` method right below it in the same file, which does handle its own
+error correctly. Every domain event type here marshals cleanly today (no
+channels, functions, or cyclic references), so this was never going to fire in
+practice — but it's a real latent bug in `stores`, not a style choice, and worth
+a one-line fix there independent of this project if you want `stores`'
+`CONTRACT.md`-facing behavior to actually match what the code guarantees.
+
+Second, every aggregate-lifecycle event (`BasketStarted`, `BasketCheckedOut`,
+`BasketCanceled`) gets an empty `struct{}` payload, same as
+`StoreParticipationEnabled` did _not_ do in `stores` — `stores` always included
+at least the resulting state (`Participating: true`) even when arguably
+redundant with the event name itself. I left these three empty because there's
+no equivalent "resulting state" to echo — `Status` isn't part of these events'
+identity, `AggregateID`/`EventName` already say everything a consumer needs (a
+basket started, or reached checkout, or was canceled). Worth a gut-check: does
+`ordering` (Phase 3, next project) need anything else out of `BasketCheckedOut`
+beyond "this basket ID checked out"? If it needs the full item list at time of
+checkout, this payload is too thin and needs revisiting before Phase 4/5
+close-out — not urgent now, but worth naming before we're several Steps past it.
+
+Drop these four files into `depot-baskets/baskets/internal/events/`, run
+`go build ./...` from `depot-baskets/baskets` to confirm it compiles against the
+domain package. Let me know how it goes.
