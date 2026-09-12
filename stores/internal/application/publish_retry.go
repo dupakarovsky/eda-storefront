@@ -16,7 +16,15 @@ const (
 	publishAttemptTimeout = 1500 * time.Millisecond
 )
 
-func publishWithRetry(ctx context.Context, publisher *foundationnats.Publisher, logger *slog.Logger, subject string, payload []byte) (*jetstream.PubAck, error) {
+// publishWithRetry will need a msgID as the jetstream will
+func publishWithRetry(
+	ctx context.Context,
+	publisher *foundationnats.Publisher,
+	logger *slog.Logger,
+	subject string,
+	payload []byte,
+	msgID string,
+) (*jetstream.PubAck, error) {
 
 	var lastErr error
 
@@ -25,10 +33,11 @@ func publishWithRetry(ctx context.Context, publisher *foundationnats.Publisher, 
 
 		// perform the publishing in the stream
 		attempCtx, cancel := context.WithTimeout(ctx, publishAttemptTimeout)
+		// Publish is now guaranteed to return within ~1.5s one way or another,
+		// because the context itself will cancel the call if nothing else does first
+		ack, err := publisher.Publish(attempCtx, subject, payload, msgID)
 
-		// Publish is now guaranteed to return within ~1.5s one way or another, because the context itself will cancel the call if nothing else does first
-		ack, err := publisher.Publish(attempCtx, subject, payload)
-		// deferring across loop iterations would leak publishAttemptTimeout-duration contexts stacking up until the whole function returns,
+		// deferring across loop iterations would leak publishAttempt Timeout-duration contexts stacking up until the whole function returns,
 		// which is a real (if minor) resource leak worth avoiding on principle.
 		cancel()
 

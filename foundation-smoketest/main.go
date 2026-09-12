@@ -15,6 +15,7 @@ import (
 	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
 	"github.com/dupakarovsky/eda-storefront/foundation/postgres"
 	foundationshutdown "github.com/dupakarovsky/eda-storefront/foundation/shutdown"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -175,8 +176,10 @@ func pingHandler(logger *slog.Logger, pool *pgxpool.Pool, publisher *foundationn
 			return
 		}
 
+		msgID := uuid.NewString()
+
 		// try to publish to the stream
-		ack, err := publisher.Publish(r.Context(), "smoketest.ping.received", []byte(`{"ok": true}`))
+		ack, err := publisher.Publish(r.Context(), "smoketest.ping.received", []byte(`{"ok": true}`), msgID)
 		if err != nil {
 			logger.Error("publisher: nats publish failed", "error", err)
 			http.Error(w, "nats publish failed", http.StatusInternalServerError)

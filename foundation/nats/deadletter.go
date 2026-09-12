@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -26,9 +27,12 @@ func PublishDeadLetter(pub *Publisher, service string, logger *slog.Logger) Dead
 			"cause", cause,
 		)
 
+		// genereat a new unique id for this message
+		msgID := uuid.NewString()
+
 		// then we publish this message under a the 'dead-letter' subject so it can be
 		// pulled again later
-		if _, err := pub.Publish(ctx, subject, msg.Data()); err != nil {
+		if _, err := pub.Publish(ctx, subject, msg.Data(), msgID); err != nil {
 			logger.Error("failed to publish dead letter", "subject", subject, "error", err)
 		}
 	}

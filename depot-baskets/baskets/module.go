@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/dupakarovsky/eda-storefront/baskets/internal/application"
+	"github.com/dupakarovsky/eda-storefront/baskets/internal/catalog"
+	"github.com/dupakarovsky/eda-storefront/baskets/internal/postgres"
 	foundationconfig "github.com/dupakarovsky/eda-storefront/foundation/config"
 	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
 	foundationpostgres "github.com/dupakarovsky/eda-storefront/foundation/postgres"
 
-	"github.com/dupakarovsky/eda-storefront/foundation/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -25,6 +27,15 @@ type Module struct {
 
 	Publisher  *foundationnats.Publisher
 	Subscriber *foundationnats.Subscriber
+
+	CatalogRepo catalog.Repository
+
+	StartBasketUC  *application.StartBasket
+	AddItemUC      *application.AddItem
+	RemoveItemUC   *application.RemoveItem
+	CheckoutUC     *application.Checkout
+	CancelBasketUC *application.CancelBasket
+	GetBasketUC    *application.GetBasket
 
 	// ConnectServer *connectapi.Server
 }
@@ -51,7 +62,7 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	}
 
 	// initialize a new pool of connections for the baskets database
-	pool, err := postgres.NewPool(ctx, dbCfg)
+	pool, err := foundationpostgres.NewPool(ctx, dbCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -63,6 +74,12 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		"user", cfg.DB.User,
 		"database", cfg.DB.Database,
 	)
+
+	//============================================================================
+	// REPOSITORY INITIALIZATION
+	//============================================================================
+	catalogRepo := postgres.NewCatalogRepository(pool)
+	basketRepo := postgres.NewBasketRepository(pool)
 
 	//============================================================================
 	// NATS INITIALIZATION
@@ -128,9 +145,20 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		storesStreamName,
 		logger,
 		foundationnats.StandardConsumerConfig("baskets-stores-projector"),
-		placeholderHandler(logger),
+		catalog.Project(catalogRepo, logger),
 		foundationnats.PublishDeadLetter(publisher, "baskets", logger),
 	)
+
+	//============================================================================
+	// APPLICATION USE CASES INITIALIZATION
+	//============================================================================
+
+	startBasketUC := application.NewStartBasket(basketRepo, publisher, logger)
+	addItemUC := application.NewAddItem(basketRepo, catalogRepo, publisher, logger)
+	removeItemUC := application.NewRemoveItem(basketRepo, publisher, logger)
+	checkoutUC := application.NewCheckout(basketRepo, publisher, logger)
+	cancelBasketUC := application.NewCancelBasket(basketRepo, publisher, logger)
+	getBasketUC := application.NewGetBasket(basketRepo)
 
 	//============================================================================
 	// NATS INITIALIZATION
@@ -144,6 +172,15 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		JS:         js,
 		Publisher:  publisher,
 		Subscriber: subscriber,
+
+		CatalogRepo: catalogRepo,
+
+		StartBasketUC:  startBasketUC,
+		AddItemUC:      addItemUC,
+		RemoveItemUC:   removeItemUC,
+		CheckoutUC:     checkoutUC,
+		CancelBasketUC: cancelBasketUC,
+		GetBasketUC:    getBasketUC,
 	}, nil
 }
 
@@ -155,12 +192,3 @@ func (m *Module) Close() {
 }
 
 //-----------------------------------------------------------------------------
-
-func placeholderHandler(logger *slog.Logger) foundationnats.MessageHandler {
-	return func(ctx context.Context, msg jetstream.Msg) error {
-		logger.Info("received stores event (placeholder handler, no-op)",
-			"subject", msg.Subject(),
-		)
-		return nil
-	}
-}

@@ -1013,3 +1013,362 @@ close-out — not urgent now, but worth naming before we're several Steps past i
 Drop these four files into `depot-baskets/baskets/internal/events/`, run
 `go build ./...` from `depot-baskets/baskets` to confirm it compiles against the
 domain package. Let me know how it goes.
+
+### Step 3
+
+Here's the `catalog` package — plain structs, no constructors with invariants,
+no events, matching the "read-model only" decision from before:
+
+```go
+// baskets/internal/catalog/store.go
+```
+
+```go
+// baskets/internal/catalog/product.go
+```
+
+```go
+// baskets/internal/catalog/repository.go
+```
+
+A few choices worth explaining rather than leaving implicit.
+
+Types are named `Store`/`Product` (not `CatalogStore`/`CatalogProduct`) — since
+the package itself is called `catalog`, callers reference them as
+`catalog.Store`/`catalog.Product`, and prefixing the type name too would be Go's
+classic stutter anti-pattern (`catalog.CatalogStore`). This is different from
+how `domain.Store` reads in `stores`, but that's just because `stores`' own
+domain package is generically named `domain`, not `store` — the naming
+convention is actually consistent once you account for the package name doing
+the qualifying work either way.
+
+`Repository` has no `WithLock`/`FindByIDForUpdate`, unlike `BasketRepository` —
+this was already anticipated in the Step 5 line of our Phase plan (upserts are
+idempotent by construction, and the projector is the only writer, so there's no
+concurrent-write race to guard against the way `EnableStoreParticipation`'s
+read-modify-write on `Store` needs to).
+
+`FindProductByID` is the only read method, and there's deliberately no
+`FindStoreByID` yet — since your validation answer was "reject if missing from
+cache" only (no participation check), nothing in this Phase actually needs to
+_read_ a cached `Store` back out. `UpsertStore` still exists on the write side,
+because the projector needs somewhere to put
+`StoreCreated`/`StoreRebranded`/`StoreParticipationEnabled`/`StoreParticipationDisabled`
+events regardless of whether anything reads them yet — leaving that data on the
+floor would just mean redoing this Step later once `FindStoreByID` does become
+necessary (e.g. if participation-checking gets added in Phase 4/5). This is the
+same "build the write side now, defer the read method until something needs it"
+discipline ADL 0008 used for `stores`' own query layer.
+
+One thing I did **not** write: a `catalog_test.go`. Every `domain` file so far
+had a matching test because it had actual behavior to verify — constructors that
+validate, methods that enforce invariants and emit events.
+`catalog.Store`/`catalog.Product` are plain data with no methods at all; there's
+nothing here a unit test could meaningfully exercise beyond "does this struct
+have the fields I just declared it to have." The real verification for this
+package happens later, once the Postgres implementation and the projector
+handler exist — that's where an upsert either round-trips correctly or it
+doesn't.
+
+Does that match what you had in mind, or is there a read method / field you'd
+want added now rather than deferred? Once confirmed, drop these three files into
+`depot-baskets/baskets/internal/catalog/` and run `go build ./...` to confirm it
+compiles standalone (it has no dependency on `domain` at all, so this should be
+a trivial build).
+
+### Application Layer
+
+Ported the retry/publish helpers, with import paths swapped from
+`stores/internal/*` to `baskets/internal/*` — otherwise unchanged, since the
+retry-window/backoff/timeout logic ADL 0007 established doesn't need to differ
+per service:
+
+```go
+// baskets/internal/application/publish_retry.go
+```
+
+```go
+// baskets/internal/application/publish_event.go
+```
+
+Now the six use cases:
+
+```go
+// baskets/internal/application/start_basket.go
+```
+
+```go
+// baskets/internal/application/add_item.go
+```
+
+```go
+// baskets/internal/application/remove_item.go
+```
+
+```go
+// baskets/internal/application/checkout.go
+```
+
+```go
+// baskets/internal/application/cancel_basket.go
+```
+
+```go
+// baskets/internal/application/get_basket.go
+```
+
+That's five command use cases plus one query use case (`GetBasket`, thin per ADL
+0008 — no repo write, no publish, exactly the shape `GetStore`/`ListProducts`
+established). `AddItem` is the one genuinely new shape: it's the only use case
+in either service so far that takes a dependency on _two_ repositories, and it's
+the concrete result of the Option 2 decision from last turn — the catalog
+`FindProductByID` call runs inside `txCtx`, the same transaction
+`FindByIDForUpdate`/`Save` use, all three resolving to the identical `pgx.Tx`
+via `executorFrom`.
+
+Before I write the catalog-projection handler (replacing `bsk_module.go`'s
+placeholder), there's a real design question I haven't raised yet: that handler
+decodes _`stores`' own_ published events, not `baskets`' own. Per ADL 0004,
+`baskets` never imports `stores/internal/events` or `stores/internal/domain` —
+the only thing that travels forward is `stores/CONTRACT.md`. So the
+envelope-decoding and payload-shape code the projector needs has to be written
+fresh, locally in `baskets`, based on what `CONTRACT.md` documents `stores`
+publishes — not shared code, even though it'll look almost identical to
+`stores`' own `events` package by construction.
+
+#### CatalogRepository fix
+
+Good — the fix is genuinely narrow. Here's the migration, the interface change,
+the repository update, and the projector.
+
+```sql
+-- baskets/migrations/000003_add_catalog_products_seq_guard.up.sql
+ALTER TABLE catalog_products
+    ADD COLUMN last_applied_seq BIGINT NOT NULL DEFAULT 0;
+```
+
+```sql
+-- baskets/migrations/000003_add_catalog_products_seq_guard.down.sql
+ALTER TABLE catalog_products
+    DROP COLUMN last_applied_seq;
+```
+
+`last_applied_seq` only needs to exist on `catalog_products` — every
+`catalog_stores` write is already an absolute `UPDATE`/upsert, so only
+`AdjustProductPrice` needed the guard. Defaulting to `0` means the first-ever
+price adjustment for a product (any real NATS stream sequence number starts at
+`1` and only increases) always applies, with no separate initialization needed
+on `CreateProduct`.
+
+```go
+// baskets/internal/catalog/repository.go — AdjustProductPrice signature updated
+```
+
+```go
+// baskets/internal/postgres/catalog_repository.go — AdjustProductPrice replaced
+```
+
+`RowsAffected() == 0` is genuinely ambiguous between two different causes —
+either this exact sequence number was already applied (the redelivery case we're
+guarding against), or the product doesn't exist at all (an out-of-order
+`ProductPriceIncreased` arriving before `ProductAdded` has landed, which
+shouldn't happen given single-subject ordering, but the `WHERE` clause can't
+distinguish the two). `ErrPriceAdjustmentSkipped` deliberately doesn't try to
+tell them apart — the projector handler below treats it as a benign no-op either
+way, logged but not retried, since retrying a stale redelivery would just hit
+the same guard again.
+
+```go
+// baskets/internal/catalog/project.go
+```
+
+A few things worth being explicit about.
+
+The event name strings (`"StoreCreated"`, `"ProductPriceIncreased"`, etc.) are
+**literal string constants written directly in this switch**, not references to
+`domain.StoreCreatedEvent`-style constants — because `baskets` has no such
+constants to reference; those live in `stores/internal/domain`, which ADL 0004
+says never crosses the boundary. This is a real, if narrow, drift risk: if
+`stores` ever renames one of these event strings, nothing in `baskets` would
+fail to compile — it would just silently stop matching, fall into `default`, log
+a warning, and skip the projection. `CONTRACT.md` is the only thing keeping
+these two services' understanding of the string in sync, which is exactly the
+discipline ADL 0004's Consequences section already named ("`CONTRACT.md` needs
+to be kept honest and current... or downstream projects will be built against a
+stale contract").
+
+`msg.Metadata()` is only called in the price-delta branch, not unconditionally
+at the top — every other case is naturally idempotent and has no use for the
+sequence number, so there's no reason to pay for the call (or handle its error)
+on every message.
+
+The `default` case logs and returns `nil` (ack, not retry) rather than treating
+an unrecognized event name as a handler failure — an unknown event isn't a
+transient problem `NakWithDelay`'s backoff would ever resolve; retrying it five
+times and dead-lettering it would just be noise for something that's actually a
+contract-drift bug, not a processing failure.
+
+Last piece for this Step: wiring `Project(catalogRepo, logger)` into
+`bsk_module.go`, replacing `placeholderHandler`, and constructing all six use
+cases + both repositories there. Want that now, or do you want to review this
+batch (repository, migration, projector) first?
+
+### Wiring to Module
+
+Here's the fully wired `bsk_module.go`:
+
+```go
+// baskets/internal/module.go (formerly bsk_module.go)
+```
+
+A few things changed or removed, worth confirming rather than assuming you'd
+want silently.
+
+`placeholderHandler` is gone entirely — it's replaced by
+`catalog.Project(catalogRepo, logger)`, so there's no more log-only no-op; every
+`stores` event landing on this consumer now actually mutates
+`catalog_stores`/`catalog_products`.
+
+I resolved the double-import oddity from the original file
+(`foundation/postgres` was imported twice, once as `foundationpostgres`, once
+bare as `postgres`) down to a single `foundationpostgres` alias, since the local
+`postgres` name is now needed for _this_ project's own `internal/postgres`
+package (`BasketRepository`/`CatalogRepository`) — the original double-import
+would now collide with that. This wasn't a bug exactly (Go permits importing one
+path under two names in the same file), but it's no longer just redundant, it's
+actually unusable now that `baskets/internal/postgres` needs the plain
+`postgres` name for itself.
+
+Both repositories are constructed by passing `pool` (a `*pgxpool.Pool`) directly
+wherever an `Executor` is expected — this works because `pgxpool.Pool` already
+implements every method `postgres.Executor` requires
+(`Exec`/`QueryRow`/`Query`/`Begin`), the same implicit-satisfaction pattern
+`stores` relies on.
+
+`connectapi.Server` and its wiring are still commented out, matching where
+`stores` left it in earlier phases and where `bsk_cmd_srv_main.go` currently has
+its RPC routes commented too — that's Step 7, not this one.
+
+Run `go build ./...` and `go vet ./...` from `depot-baskets/baskets` — this is
+the first build that has to successfully wire `domain`, `catalog`, `events`,
+`postgres`, and `application` together into one working `Module`, so it's a
+meaningful integration check even before any real container is involved. Let me
+know what comes back.
+
+### NATS retry on fail policy
+
+Confirmed, and more precisely than I expected: `Messages: 4`,
+`First Sequence: 1`, `Last Sequence: 4` — no unaccounted gaps, no extra control
+messages. Every one of the 4 slots is a real, stored `BasketStarted` publish.
+Test 1 accounts for exactly one (`seq=1`). Test 2's single `Execute` call —
+which should have produced exactly one message — accounts for the other three
+(`seq=2,3,4`). The duplicate-publish theory is confirmed directly, not just
+inferred from timestamps.
+
+And there's something even better in that same output:
+**`Duplicate Window: 2m0s`**. JetStream streams ship with a built-in
+idempotent-publish mechanism specifically for this exact ambiguity — a publisher
+attaches a `Nats-Msg-Id` header to a message, and if the _same_ message ID
+arrives again within the configured window (2 minutes, here — the default),
+JetStream recognizes it as a duplicate and returns the _original_ message's ack
+instead of storing a second copy. This stream already has that window
+configured. Our code just never uses it — `Publisher.Publish` calls
+`p.js.Publish(ctx, subject, payload)` with no message ID at all, so every retry
+attempt looks like a brand-new, distinct message to JetStream, deduplication
+window or not.
+
+This is the correct fix, not a workaround — forcibly disabling `nats.go`'s
+reconnect buffer would stop _this specific_ symptom, but it wouldn't solve the
+underlying ambiguity (a publish can still land server-side while the client, for
+any number of reasons, never sees the ack). Message-ID-based idempotency solves
+the actual problem: retries of the _same logical event_ converge to one stored
+message, regardless of why the client couldn't confirm the earlier attempt.
+
+Three things need to change, and the most important one is **not
+`baskets`-local**:
+
+```go
+// foundation/nats/publish.go — Publish signature gains a msgID parameter
+func (p *Publisher) Publish(
+    ctx context.Context,
+    subject string,
+    payload []byte,
+    msgID string) (
+*jetstream.PubAck, error) {
+
+    ack, err := p.js.Publish(ctx, subject, payload, jetstream.WithMsgID(msgID))
+    if err != nil {
+        return nil, fmt.Errorf("publishing to %q: %w", subject, err)
+    }
+
+    return ack, nil
+}
+```
+
+```go
+// baskets/internal/application/publish_retry.go
+// — msgID threaded through, same on every attempt
+func publishWithRetry(
+    ctx context.Context,
+    publisher *foundationnats.Publisher,
+    logger *slog.Logger,
+    subject string,
+    payload []byte,
+    msgID string)
+(*jetstream.PubAck, error) {
+    ...
+    ack, err := publisher.Publish(attempCtx, subject, payload, msgID)
+    ...
+}
+```
+
+```go
+// baskets/internal/application/publish_event.go
+// — one msgID generated per logical call, reused across all retries
+import (
+    ...
+    "github.com/google/uuid"
+)
+
+func publishDomainEvent(
+    ctx context.Context,
+    publisher *foundationnats.Publisher,
+    logger *slog.Logger,
+    event domain.Event) error {
+    ...
+    msgID := uuid.NewString()
+
+    ack, err := publishWithRetry(ctx, publisher, logger, subject, payload, msgID)
+    ...
+}
+```
+
+The critical detail: `msgID` is generated **once**, before entering
+`publishWithRetry`'s loop, and the exact same value is passed on attempt 1, 2,
+and 3. That's what makes JetStream see three arrivals of the _same_ ID rather
+than three different ones — a fresh UUID per attempt would defeat the whole
+mechanism.
+
+Three consequences worth flagging, not just the code:
+
+`foundation/nats.Publish`'s signature change is a breaking change to shared
+code. `stores`' own `publishWithRetry`/`publishDomainEvent` calls
+`Publish(ctx, subject, payload)` with the old three-argument shape — this won't
+compile against `stores` until its local copy is updated the same way. Given
+`stores` has the exact same client library, the exact same missing-msg-ID gap,
+and (per your earlier NATS-restart test) the exact same retry-during-outage code
+path, it almost certainly has this identical duplicate-publish bug, just never
+actually verified via sequence-number inspection the way we just did here.
+
+ADL 0009 stated flatly that `uuid.NewString()` in the `connectapi` handler is
+"the only place in the codebase that currently needs the
+`github.com/google/uuid` dependency; the `application` and `domain` layers have
+no reason to import it." That's no longer true — `application` now needs it too,
+for message IDs, which is a different purpose than aggregate-ID generation but
+the same dependency. Worth a note in that ADL's Consequences (or a new one), not
+silently invalidating what it said.
+
+This is a system-wide correctness fix discovered mid-`baskets`, affecting shared
+`foundation` code and (almost certainly) `stores` too — squarely the kind of
+decision `roadmap.md`'s own working agreement says gets an ADL entry, not just a
+fix buried in a progress log.

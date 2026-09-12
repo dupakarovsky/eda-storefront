@@ -8,6 +8,7 @@ import (
 	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
 	"github.com/dupakarovsky/eda-storefront/stores/internal/domain"
 	storesevents "github.com/dupakarovsky/eda-storefront/stores/internal/events"
+	"github.com/google/uuid"
 )
 
 // publishDomainEvent will perform the event enveloping, marshal it into JSON
@@ -32,8 +33,13 @@ func publishDomainEvent(ctx context.Context, publisher *foundationnats.Publisher
 		return fmt.Errorf("resolving subject: %w", err)
 	}
 
+	// generates a unique ID for the message before entering publishWithRetry
+	// so the exact same value is passed over to attemps 1,2 and 3. That allows the
+	// jetstream to see the arrival of the same ID rather than 3 different ones.
+	msgID := uuid.NewString()
+
 	// try to publish the event using the retry function
-	ack, err := publishWithRetry(ctx, publisher, logger, subject, payload)
+	ack, err := publishWithRetry(ctx, publisher, logger, subject, payload, msgID)
 	if err != nil {
 		logger.Error("event publish exhausted retries; aggregate saved but event not delivered",
 			"aggregate_id", event.AggregateID(),

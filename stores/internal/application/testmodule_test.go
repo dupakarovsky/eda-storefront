@@ -13,7 +13,8 @@ import (
 
 const ApplicationTest string = "application_test.log"
 
-// loadRealEnv will need to load the .ev
+// loadRealEnv will loads the environmental variables needed to
+// for initializing the module
 func loadRealEnv(t *testing.T) {
 	t.Helper()
 

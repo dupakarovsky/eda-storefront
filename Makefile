@@ -115,6 +115,7 @@ depot/run:
 	chmod +x ./depot-baskets/depot/bin/depot
 	cd ./depot-baskets/depot && ./bin/depot
 
+
 ## ----------------------------------------------------------------------------
 ## -- database access ---
 ## ----------------------------------------------------------------------------
@@ -127,6 +128,14 @@ storesdb/dev:
 # connect to the storesdb as the edb_dev user
 basketsdb/dev:
 	psql -h 127.0.0.1 -p 5433 -d basketsdb -U eda_dev
+
+## ----------------------------------------------------------------------------
+## -- nats inspection ---
+## ----------------------------------------------------------------------------
+
+.PHONY: nats/baskets
+nats/baskets:
+	docker run --rm --network eda-storefront_eda-net natsio/nats-box:latest  nats --server nats://nats:4222 stream info baskets
 
 ## ----------------------------------------------------------------------------
 ## --- uttilities -- 
