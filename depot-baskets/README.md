@@ -1629,3 +1629,82 @@ diff, and the full `journey_progress.md` Phase 3 close-out (including the
 `BasketCheckedOut` payload-thinness reminder for Phase 4/5, and the
 newly-deferred redelivery-failure-injection test) — to actually close out this
 Phase, or is there something else you want to check first?
+
+## Phase 4 Plan -- Depot
+
+Once that's settled, here's the Step breakdown I'd propose for Phase 4,
+mirroring Phase 3's shape exactly:
+
+- Step 1 — `ShoppingList` domain aggregate (lifecycle guards, event emission)
+- Step 2 — Domain test suite
+- Step 3 — `events` package (envelope/payload/subject/stream)
+- Step 4 — `catalog` package (Store/Product read-model + narrow per-event
+  `Repository`, reusing `baskets`' redesigned shape from the start this time)
+- Step 5 — `postgres` package (repositories + migrations)
+- Step 6 — `application` layer (use cases, catalog projector wired in)
+- Step 7 — `connectapi` (proto + server)
+- Step 8 — Integration verification (real Postgres/NATS tests + live curl
+  script)
+
+Good — that locks in the design. Let me recap the finalized shape so we're both
+building against the same thing before any code gets written.
+
+**`ShoppingList` aggregate — final shape for Step 1:**
+
+```
+ShoppingList
+  ID     string
+  Status ShoppingListStatus
+  Stops  map[string]*Stop   // keyed by storeID
+
+Stop
+  StoreName     string
+  StoreLocation string
+  Items         []Item      // {ProductID, Quantity}, same shape as Basket.Item
+```
+
+**Lifecycle**, all flat states, no bot-related ones:
+
+- `NewShoppingList(id)` → `pending`, emits `ShoppingListCreated`. Takes no
+  `orderID` — `ordering` doesn't exist yet (ADL 0004), and we're treating that
+  gap as a deliberate, named deferral rather than a placeholder field. I'll add
+  a line to this effect in the Phase 4 summary so it's a documented standing
+  item, the same way ADL 0007's outbox gap and ADL 0012's multi-failure
+  absorption are tracked — something Project 3 (`ordering`) must revisit, not
+  silently discover.
+- `AddItem(store *Store, product *Product, quantity int)` — only legal while
+  `pending`. Finds or creates the `Stop` for `store.ID`, then merges into that
+  `Stop`'s `Items` (same increment-on-repeat-add semantics as `Basket.AddItem`).
+  Requires the `application` layer to resolve both `store` and `product` from
+  `depot`'s own catalog cache before calling in — two lookups instead of
+  `baskets`' one, a direct consequence of `Stops` needing store data the
+  aggregate itself never fetches.
+- `RemoveItem(storeID, productID string)` — takes both IDs, per your call, to
+  avoid ambiguity if two stores coincidentally carry a product with the same ID.
+  Finds the `Stop` by `storeID`, decrements/removes the item within it, and
+  deletes the `Stop` entirely if that was its last item — so `Stops` never
+  carries dead, empty entries forward.
+- `Initiate()` — `pending` → `active`, emits `ShoppingListInitiated`. No
+  `Assign()`/`AssignedBotID` at all; there's no bot to assign to, so `active`
+  just means "picking has started," full stop.
+- `Complete()` — `active` → `completed`, emits `ShoppingListCompleted`,
+  rejecting an empty `Stops` map with `ErrShoppingListIsEmpty` (mirrors
+  `Basket.Checkout`'s `ErrBasketIsEmpty`), per your confirmation. This is the
+  one event `ordering` will eventually consume — and per your own reasoning, a
+  completed list is presumably a precondition for creating the order, not
+  something ordering waits on the other way around. Worth double-checking
+  against the book's actual sequencing once `ordering` is real, but it's a
+  reasonable working assumption for now.
+- `Cancel()` — legal from `pending` or `active`, emits `ShoppingListCanceled`.
+  I'd keep `Basket.Cancel`'s pattern of two distinct terminal-state errors
+  (`ErrShoppingListAlreadyCompleted`, `ErrShoppingListAlreadyCanceled`) rather
+  than one collapsed error, for consistency.
+
+That's a complete, self-consistent Step 1 with no dangling references to
+services that don't exist yet. If this matches what you're picturing, I'll write
+`shopping_list.go`, `shopping_list_status.go`, and `events.go` (mirroring
+`baskets_basket.go`, and folding status + events into files matching your naming
+convention) as the next message, then we do the check-in per the skill before
+moving to Step 2 (the domain test suite).
+
+Ready for me to write Step 1?
