@@ -1597,6 +1597,8 @@ endpoints called against `PRODUCT_ID` before the `sleep`, then a direct
 landed exactly once — happy to extend the script that way if you want it covered
 now rather than left implicit.
 
+### Test conclusion
+
 Everything landed correctly this run — including the fix. `price: 6.5` matches
 the exact `5.00 → +2.00 → -0.50 → 6.50` math, `last_applied_seq: 120` confirms
 the guard column is populated with a real stream sequence rather than left at

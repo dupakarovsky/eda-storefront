@@ -338,3 +338,214 @@ condition: service_started` guarantees container start order only, not
   deferred redelivery/dead-letter testing are both standing items to
   revisit, not forgotten gaps — same treatment as ADL 0007's outbox
   deferral and ADL 0012's known multi-failure absorption limitation.
+
+## Phase 3 Summary — COMPLETE
+
+**Status:** All 8 Steps complete and verified against live containers,
+including two Steps' worth of real correctness fixes discovered mid-Phase,
+not just planned work. Phase 3 closed out.
+
+### What Was Built
+
+**Step 1 — `Basket`/`Item` domain aggregate.** `NewBasket`,
+`AddItem`/`RemoveItem` (quantity-merge on repeat add, decrement-then-remove
+on repeat removal, `ProductID`-keyed with no separate `Item.ID`),
+`Checkout`/`Cancel` (asymmetric error reporting on `Cancel` — distinguishing
+already-checked-out from already-canceled — versus `AddItem`/`RemoveItem`'s
+single collapsed `ErrBasketNotOpen`), an explicit `BasketStatus` lifecycle
+guard. `BasketRepository` interface following `StoreRepository`'s shape
+(`Save`/`FindByID`/`FindByIDForUpdate`/`WithLock`).
+
+**Step 2 — Domain test suite.** Full coverage of every guard/error path and
+every event emission, mirroring `store_test.go`'s density.
+
+**Step 3 — `events` package.** Envelope/payload/subject/stream, structurally
+identical to `stores/internal/events`, four files. `ItemAdded`'s payload
+carries the running `Quantity` total (a deliberate decision, tested
+explicitly via a repeat-`AddItem` round-trip case `stores` never needed).
+
+**Step 4 — `catalog` package.** Plain `Store`/`Product` read-model structs,
+deliberately separate from `domain` (no invariants, no events) — the
+projector is the writer, `application` is the reader. Repository interface
+went through one real redesign mid-Step: an initial upsert-whole-aggregate
+shape was replaced with one narrow method per consumed event
+(`RenameStore`, `SetStoreParticipation`, `AdjustProductPrice`, etc.), since
+most of `stores`' events carry only a changed field, not the aggregate's
+full state, and the original shape would have required a read-before-write
+this package was deliberately built to avoid.
+
+**Step 5 — `postgres` package.** `BasketRepository` (delete-then-reinsert
+`basket_items` sync on every `Save`, chosen over an initially-implemented
+diff-based sync for simplicity, given realistic basket sizes),
+`CatalogRepository` (narrow per-event methods matching Step 4's interface).
+Two migrations (`baskets`/`basket_items`; `catalog_stores`/`catalog_products`)
+plus a third, added mid-Step, adding `catalog_products.last_applied_seq` —
+see Issues Found below.
+
+**Step 6 — `application` layer.** `StartBasket`, `AddItem` (the first use
+case in either service depending on two repositories in one transaction —
+`BasketRepository` and `catalog.Repository`, both resolving to the same
+`pgx.Tx` via `executorFrom`), `RemoveItem`, `Checkout`, `CancelBasket`,
+`GetBasket` (thin, per ADL 0008). The catalog-projection handler
+(`catalog.Project`) replacing the Phase 2 placeholder — decodes `stores`'
+wire-format events via locally-defined envelope/payload types (per ADL 0004,
+no import of `stores`' own packages), dispatching to `catalog.Repository`'s
+narrow methods.
+
+**Step 7 — `connectapi`.** `basketspb/api.proto` (six RPCs; `StartBasket`
+takes no input fields at all, unlike every one of `stores`' `Create*`
+requests), `Server`/`errors.go`/`proto.go`/`basket.go`, wired into
+`module.go` and `main.go`.
+
+**Step 8 — Integration verification.** Full `internal/application` suite
+run file-by-file against real Postgres/NATS (all six use cases, including
+the retry-under-NATS-outage test). A live, scripted, end-to-end curl
+verification against real `stores` + `baskets` + Postgres + NATS together —
+quantity increment/decrement, checkout, four distinct negative cases, and a
+direct `catalog_products` query confirming `AdjustProductPrice`'s delta math
+and sequence guard.
+
+### Issues Found & Resolved
+
+1. **`BasketStatus` constant names collided with event type names**
+   (`BasketCanceled` as both a status constant and an event struct) in the
+   same package — caught at first compile attempt, fixed by renaming every
+   status constant with a `Status` suffix (`BasketOpenStatus`, etc.).
+2. **`catalog.Repository`'s original upsert-whole-aggregate design was
+   unworkable** for any event carrying only a partial field change (name
+   change, participation toggle, price delta) — would have required a
+   read-before-write this package was explicitly built to avoid. Caught
+   before any Postgres code was written, redesigned to one narrow method
+   per event shape.
+3. **`AdjustProductPrice`'s delta-based update was not safe under message
+   redelivery** — applying `price = price + delta` twice for the same
+   logical event (a real path: handler succeeds, crash/ack-failure before
+   `msg.Ack()`, JetStream redelivers) would silently double-apply the
+   adjustment, unlike every other catalog write (absolute upserts,
+   naturally idempotent). Fixed with a `last_applied_seq` guard column and
+   a conditional `UPDATE ... WHERE last_applied_seq < $seq`, using the raw
+   JetStream stream sequence number as the dedup key. Caught by reasoning
+   through the redelivery path before writing the naive version into
+   production code, not discovered by a failing test.
+4. **A genuine cross-service publish-duplication bug (ADL 0015)** — the
+   first real-infrastructure NATS-outage retry test
+   (`TestStartBasket_Execute_SucceedsAfterNATSRestart`) passed on its own
+   terms, but inspecting the actual stream afterward
+   (`nats stream info baskets`) showed 4 stored messages where 2 were
+   expected — `nats.go`'s client-side reconnect buffer had silently queued
+   and later flushed "failed" retry attempts as genuine, separately-acked,
+   duplicate messages. Fixed via `Nats-Msg-Id`-based idempotent publish
+   (JetStream's own built-in `Duplicate Window` mechanism, present by
+   default but never previously used by either service), verified by
+   rerunning the same test and confirming the stream now advances by
+   exactly 1 sequence number per logical call instead of 3. Backported to
+   `stores` same-day, since it shares the identical vulnerability via the
+   same `foundation/nats.Publisher.Publish` call. `PublishDeadLetter` (also
+   in `foundation/nats`) was independently found to share the same
+   unguarded-`Publish` call and patched at the same time.
+5. **`AddItem` returned the wrong error class for a blank `product_id`** —
+   `404 NotFound` instead of `400 InvalidArgument` — because the catalog
+   existence check (chosen to run first, inside the same transaction, per
+   the Option 2 design decided earlier in the Phase) ran before the
+   domain's own blank-ID guard ever got a chance to fire. A blank string is
+   a well-formed (if useless) SQL parameter, so it resolved to
+   `catalog.ErrProductNotFound` rather than `domain.ErrProductIDIsBlank`.
+   Caught by the live end-to-end verification script, not by any earlier
+   unit or integration test — none of which exercised a blank `productID`
+   through the full `application`-layer transaction. Fixed with an
+   early, fail-fast blank check ahead of `WithLock` entirely.
+6. **A dead, silently-no-op `case` block in `stores/internal/connectapi/errors.go`**
+   — four `errors.Is(...)` calls written as standalone statements rather
+   than case conditions, meaning `ErrProductNameIsBlank`,
+   `ErrProductPriceIsNegative`, and `ErrNotAPriceDecrease` (checked twice,
+   redundantly) never actually matched their intended `case`, silently
+   falling through to `CodeInternal` (500) instead of `CodeInvalidArgument`
+   (400). Found and fixed while writing `baskets`' own `errors.go` for
+   Step 7, by comparing the two files' shapes directly — a pre-existing
+   `stores` bug, unrelated to any `baskets`-specific work, that had gone
+   unnoticed since whenever it was originally written.
+
+### Key Concepts Reinforced
+
+**Verifying actual infrastructure state, not just a use case's return
+value.** The Phase's single most consequential finding (ADL 0015) was only
+caught because a passing test's _result_ wasn't treated as the end of the
+question — `nats stream info` was run afterward specifically to check
+whether the underlying stream matched what the test's success implied. Same
+discipline as ADL 0010's and ADL 0012's dedicated timing tests, now
+extended to publish-side durability.
+
+**Validation order determines which error a caller actually sees.** Issue
+#5 is the general lesson: when multiple checks could reject the same
+input, whichever one runs _first_ wins, regardless of which one is
+semantically more correct for that specific failure. `AddItem` is the first
+use case in either service where a cross-repository check runs ahead of the
+domain aggregate's own guard, and it's the first place this ordering
+actually had an observable, wrong-facing consequence.
+
+**JetStream's native idempotent-publish mechanism (`Nats-Msg-Id` +
+`Duplicate Window`) is the correct fix for publish-outcome ambiguity** —
+better than disabling client-side reconnect buffering, which would only
+have addressed the one narrow mechanism this investigation happened to
+surface, not the general "did my write land or not" problem inherent to any
+request/response protocol under network instability.
+
+**A design that looks structurally sound on paper can still fail once the
+event shapes it needs to consume are examined concretely.** `catalog.Repository`'s
+redesign (Issue #2) happened _before_ any bug was written, purely from
+walking through what each of `stores`' actual event payloads carries — a
+reminder that "does this interface's shape match the data it needs to
+handle" is worth checking against real payloads, not just against the
+abstract idea of "a repository for this read model."
+
+### State at End of Phase 3
+
+- `baskets` is fully live: `domain`, `events`, `catalog`, `postgres`,
+  `application`, `connectapi` all built, unit-tested (`domain`/`events`),
+  integration-tested against real Postgres/NATS (`application`, full
+  six-use-case suite plus the NATS-outage retry test), and verified
+  end-to-end via live HTTP/ConnectRPC calls against a running `stores`.
+- The catalog projector is real, not a placeholder — consuming `stores`'
+  full event set, applying changes via narrow per-event methods, with a
+  sequence-guarded idempotent price adjustment.
+- ADL 0015 (idempotent publish via message ID) is adopted system-wide,
+  applied to both `stores` and `baskets`.
+- **Known, deliberately deferred gaps, carried forward rather than
+  forgotten:**
+    - The `last_applied_seq` guard has only been proven to compute the
+      _correct_ result under normal operation (verified via the live script's
+      price-math check) — not proven to actually block a genuine
+      redelivery-after-crash duplicate, which would require a dedicated
+      failure-injection test (killing the projector mid-handler, after
+      Postgres commits but before `msg.Ack()`), the same "prove the failure
+      mode, then prove the fix" discipline ADL 0010/0012 each used.
+    - The live end-to-end script's `sleep 2` between publishing a `stores`
+      event and expecting `baskets`' catalog to reflect it is a timing
+      assumption, not a guarantee — worked reliably in this environment, but
+      isn't a deterministic wait.
+    - `BasketCheckedOut`/`BasketStarted`/`BasketCanceled` carry empty
+      payloads — whether `ordering` (Phase 3 in the roadmap's numbering, but
+      a different, later project than this one) needs more than a bare
+      basket ID from `BasketCheckedOut` specifically is still unknown and
+      worth revisiting once that project's actual needs are concrete.
+    - The catalog projector's event-name matching (`"StoreCreated"`, etc., as
+      local string literals) has no compiler-enforced link to `stores`' own
+      event constants — a silent rename on `stores`' side would degrade
+      silently (logged warning, skipped projection) rather than fail loudly.
+
+### Carried Into Phase 4 (`depot`)
+
+- The same architecture — narrow per-event catalog-style repository
+  methods (not upsert-whole-aggregate), sequence-guarded idempotent
+  handling for any delta-based projection, `Nats-Msg-Id`-based idempotent
+  publish from the very first line of `depot`'s own `publishDomainEvent`
+  rather than needing the ADL 0015 discovery repeated — should be `depot`'s
+  starting point, not something to re-derive.
+- The validation-ordering lesson (Issue #5): any `depot` use case combining
+  a domain-level input guard with a cross-repository lookup should run the
+  cheap, local guard first.
+- Standing items, not forgotten: the `BasketCheckedOut` payload-thinness
+  question, and the still-owed redelivery-failure-injection test for the
+  sequence-guard pattern — worth addressing once `depot`'s own equivalent
+  (if it needs one) makes the second item concrete across two services
+  instead of hypothetical for one.
