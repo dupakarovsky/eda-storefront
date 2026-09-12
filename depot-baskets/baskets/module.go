@@ -7,6 +7,8 @@ import (
 
 	"github.com/dupakarovsky/eda-storefront/baskets/internal/application"
 	"github.com/dupakarovsky/eda-storefront/baskets/internal/catalog"
+	"github.com/dupakarovsky/eda-storefront/baskets/internal/connectapi"
+	"github.com/dupakarovsky/eda-storefront/baskets/internal/events"
 	"github.com/dupakarovsky/eda-storefront/baskets/internal/postgres"
 	foundationconfig "github.com/dupakarovsky/eda-storefront/foundation/config"
 	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
@@ -37,7 +39,7 @@ type Module struct {
 	CancelBasketUC *application.CancelBasket
 	GetBasketUC    *application.GetBasket
 
-	// ConnectServer *connectapi.Server
+	ConnectServer *connectapi.Server
 }
 
 func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) (*Module, error) {
@@ -102,22 +104,9 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		return nil, err
 	}
 
-	// -- TEMPORARY ----------------------
-	// temporary stream name for the basket service
-	const (
-		storesStreamName  = "stores"
-		basketsStreamName = "baskets"
-	)
-
-	// basketsStreamSubjects defines the subjects in the "baskets" stream that can be subscribed to
-	var basketsStreamSubjects = []string{
-		"baskets.basket.*",
-	}
-	// -- TEMPORARY ----------------------
-
 	// create a new jetstream interface. the "baskets" services ensures the "baskets" stream,
 	// so it owns that stream (it'll create the stream)
-	_, err = foundationnats.EnsureStream(ctx, js, basketsStreamName, basketsStreamSubjects)
+	_, err = foundationnats.EnsureStream(ctx, js, events.BasketsStreamName, events.BasketsStreamSubjects)
 	if err != nil {
 		// if stream fails then close all connection pools and emit an error
 		nc.Close()
@@ -125,7 +114,7 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		return nil, fmt.Errorf("ensuring baskets stream: %w", err)
 	}
 
-	logger.Info("🌊 stream ensured", "name", basketsStreamName, "subjects", basketsStreamSubjects)
+	logger.Info("🌊 stream ensured", "name", events.BasketsStreamName, "subjects", events.BasketsStreamSubjects)
 
 	// -----------------------
 	// intialize a Publisher
@@ -142,7 +131,7 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	subscriber := foundationnats.NewSubscriber(
 		"BASKETS-STORES-PROJECTOR",
 		js,
-		storesStreamName,
+		events.StoresStreamName,
 		logger,
 		foundationnats.StandardConsumerConfig("baskets-stores-projector"),
 		catalog.Project(catalogRepo, logger),
@@ -161,7 +150,13 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	getBasketUC := application.NewGetBasket(basketRepo)
 
 	//============================================================================
-	// NATS INITIALIZATION
+	// CONNECTRPC SERVER INITIALIZATION
+	//============================================================================
+
+	connectServer := connectapi.NewServer(startBasketUC, addItemUC, removeItemUC, checkoutUC, cancelBasketUC, getBasketUC)
+
+	//============================================================================
+	// MODULE INITIALIZATION
 	//============================================================================
 
 	// instantiate the Module and return
@@ -181,6 +176,8 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		CheckoutUC:     checkoutUC,
 		CancelBasketUC: cancelBasketUC,
 		GetBasketUC:    getBasketUC,
+
+		ConnectServer: connectServer,
 	}, nil
 }
 

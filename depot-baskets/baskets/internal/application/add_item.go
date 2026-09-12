@@ -34,6 +34,12 @@ func NewAddItem(basketRepo domain.BasketRepository, catalogRepo catalog.Reposito
 // Execute will create first ...
 func (uc *AddItem) Execute(ctx context.Context, basketID, productID string) (*domain.Basket, error) {
 
+	// guard against blank ID to the product
+	if productID == "" {
+		return nil, domain.ErrProductIDIsBlank
+	}
+
+	// event and basket will hold the values returned by the database calls within the transaction
 	var event domain.Event
 	var basket *domain.Basket
 

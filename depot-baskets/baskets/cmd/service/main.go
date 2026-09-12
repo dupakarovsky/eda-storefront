@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/dupakarovsky/eda-storefront/baskets"
+	"github.com/dupakarovsky/eda-storefront/baskets/basketspb/basketspbconnect"
 	foundationconfig "github.com/dupakarovsky/eda-storefront/foundation/config"
 	foundationhttp "github.com/dupakarovsky/eda-storefront/foundation/http"
 	foundationlogging "github.com/dupakarovsky/eda-storefront/foundation/logging"
@@ -63,12 +64,12 @@ func main() {
 		foundationhttp.TimeoutMiddleware(cfg.Server.RequestTimeout),
 	)
 
+	// RPC endpoint
+	path, connectHandler := basketspbconnect.NewBasketsServiceHandler(mod.ConnectServer)
+
 	// attach in the routes
 	router.Handle("GET /health", healthHTTPHandler(mod))
-
-	// RPC endpoint will be added later
-	// path, connectHandler := basketspbconnect.NewBasketsServiceHandler(mod.ConnectServer)
-	// router.Handle(path, connectHandler.ServeHTTP)
+	router.Handle(path, connectHandler.ServeHTTP)
 
 	// attach the the routes to the router to recieve the handler
 	handler := router.Build()

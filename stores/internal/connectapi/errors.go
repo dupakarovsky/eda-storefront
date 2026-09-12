@@ -30,12 +30,12 @@ func mapError(err error) error {
 	case errors.Is(err, domain.ErrStoreNameIsBlank),
 		errors.Is(err, domain.ErrStoreLocationIsBlank),
 		errors.Is(err, domain.ErrStoreIsAlreadyParticipating),
-		errors.Is(err, domain.ErrStoreIsAlreadyNotParticipating):
+		errors.Is(err, domain.ErrStoreIsAlreadyNotParticipating),
 		//-------------------------------------------------------
-		errors.Is(err, domain.ErrProductNameIsBlank)
-		errors.Is(err, domain.ErrProductPriceIsNegative)
-		errors.Is(err, domain.ErrNotAPriceDecrease)
-		errors.Is(err, domain.ErrNotAPriceDecrease)
+		errors.Is(err, domain.ErrProductNameIsBlank),
+		errors.Is(err, domain.ErrProductPriceIsNegative),
+		errors.Is(err, domain.ErrNotAPriceDecrease),
+		errors.Is(err, domain.ErrNotAPriceDecrease):
 
 		return connect.NewError(connect.CodeInvalidArgument, err)
 

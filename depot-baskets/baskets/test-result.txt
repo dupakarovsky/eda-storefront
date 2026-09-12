@@ -1,0 +1,144 @@
+eda-storefront/depot-baskets/baskets [ master][!?][ v1.26.0]with 🐃 v1.72.0
+❯ ./http-connect.sh
+== [stores] CreateStore ==
+{
+  "store": {
+    "id": "60b1eb19-6972-46a7-bf84-78658dc256c6",
+    "name": "Basket Verification Grocer",
+    "location": "1 Verify Ave"
+  }
+}
+== [stores] AddProduct (first item) ==
+{
+  "product": {
+    "id": "f2755107-03fa-41b6-9a4e-86ea4b0f20c8",
+    "storeId": "60b1eb19-6972-46a7-bf84-78658dc256c6",
+    "name": "Sourdough Loaf",
+    "sku": "SKU-BASKET-VERIFY-1",
+    "price": 5
+  }
+}
+== [stores] AddProduct (second item, for multi-item basket coverage) ==
+{
+  "product": {
+    "id": "af022484-6e98-4676-9504-3c4db9fcc44d",
+    "storeId": "60b1eb19-6972-46a7-bf84-78658dc256c6",
+    "name": "Oat Milk",
+    "sku": "SKU-BASKET-VERIFY-2",
+    "price": 3.25
+  }
+}
+== waiting for baskets' projector to consume ProductAdded off stores' stream ==
+== [baskets] StartBasket ==
+{
+  "basket": {
+    "id": "fe8bb73e-eebb-465a-b711-9990ef87234f",
+    "status": "open"
+  }
+}
+== [baskets] AddItem (product 1) ==
+{
+  "basket": {
+    "id": "fe8bb73e-eebb-465a-b711-9990ef87234f",
+    "status": "open",
+    "items": [
+      {
+        "productId": "f2755107-03fa-41b6-9a4e-86ea4b0f20c8",
+        "quantity": 1
+      }
+    ]
+  }
+}
+== [baskets] AddItem (product 1 again, expect quantity 2) ==
+{
+  "basket": {
+    "id": "fe8bb73e-eebb-465a-b711-9990ef87234f",
+    "status": "open",
+    "items": [
+      {
+        "productId": "f2755107-03fa-41b6-9a4e-86ea4b0f20c8",
+        "quantity": 2
+      }
+    ]
+  }
+}
+== [baskets] AddItem (product 2) ==
+{
+  "basket": {
+    "id": "fe8bb73e-eebb-465a-b711-9990ef87234f",
+    "status": "open",
+    "items": [
+      {
+        "productId": "f2755107-03fa-41b6-9a4e-86ea4b0f20c8",
+        "quantity": 2
+      },
+      {
+        "productId": "af022484-6e98-4676-9504-3c4db9fcc44d",
+        "quantity": 1
+      }
+    ]
+  }
+}
+== [baskets] GetBasket (expect 2 items, quantities 2 and 1) ==
+{
+  "basket": {
+    "id": "fe8bb73e-eebb-465a-b711-9990ef87234f",
+    "status": "open",
+    "items": [
+      {
+        "productId": "f2755107-03fa-41b6-9a4e-86ea4b0f20c8",
+        "quantity": 2
+      },
+      {
+        "productId": "af022484-6e98-4676-9504-3c4db9fcc44d",
+        "quantity": 1
+      }
+    ]
+  }
+}
+== [baskets] RemoveItem (product 1, expect quantity to drop to 1, not disappear) ==
+{
+  "basket": {
+    "id": "fe8bb73e-eebb-465a-b711-9990ef87234f",
+    "status": "open",
+    "items": [
+      {
+        "productId": "f2755107-03fa-41b6-9a4e-86ea4b0f20c8",
+        "quantity": 1
+      },
+      {
+        "productId": "af022484-6e98-4676-9504-3c4db9fcc44d",
+        "quantity": 1
+      }
+    ]
+  }
+}
+== [baskets] Checkout ==
+{
+  "basket": {
+    "id": "fe8bb73e-eebb-465a-b711-9990ef87234f",
+    "status": "checked_out",
+    "items": [
+      {
+        "productId": "f2755107-03fa-41b6-9a4e-86ea4b0f20c8",
+        "quantity": 1
+      },
+      {
+        "productId": "af022484-6e98-4676-9504-3c4db9fcc44d",
+        "quantity": 1
+      }
+    ]
+  }
+}
+== [baskets] CancelBasket on already-checked-out basket (expect InvalidArgument / HTTP 400) ==
+{"code":"invalid_argument","message":"canceling basket: the basket is already checked out"}HTTP 400
+== [baskets] AddItem against a product stores never created (expect NotFound / HTTP 404) ==
+{"code":"not_found","message":"validating product: product not found in catalog"}HTTP 404
+== [baskets] GetBasket against unknown ID (expect NotFound / HTTP 404) ==
+{"code":"not_found","message":"finding basket: basket not found"}HTTP 404
+== [baskets] AddItem with blank productId (expect InvalidArgument / HTTP 400) ==
+{"code":"not_found","message":"validating product: product not found in catalog"}HTTP 404
+== [baskets] Checkout on empty basket (expect InvalidArgument / HTTP 400) ==
+{"code":"invalid_argument","message":"checking out basket: the basket has no items"}HTTP 400
+
+

@@ -1372,3 +1372,258 @@ This is a system-wide correctness fix discovered mid-`baskets`, affecting shared
 `foundation` code and (almost certainly) `stores` too — squarely the kind of
 decision `roadmap.md`'s own working agreement says gets an ADL entry, not just a
 fix buried in a progress log.
+
+### Step 7 -- ConnectAPI Layer
+
+Before writing `baskets`' own version, there's a real, silent bug in
+`stores/internal/connectapi/errors.go` worth fixing rather than carrying
+forward: those four `errors.Is(...)` lines inside the `case` block —
+
+```go
+
+```
+
+— are standalone expression statements, not part of the `case`'s condition list
+above them. Go happily compiles this (calling a function and discarding its
+return value is legal), but it means these four lines do _nothing at all_.
+`ErrProductNameIsBlank`, `ErrProductPriceIsNegative`, and `ErrNotAPriceDecrease`
+(checked twice, redundantly, itself a sign this was a copy-paste-in-progress
+edit) never actually match this `case` — they fall straight through to `default`
+and get mapped to `CodeInternal` (500) instead of the intended
+`CodeInvalidArgument` (400). A client sending a blank product name or a negative
+price currently gets told "internal server error" instead of "bad request,"
+which is exactly backwards from what `CONTRACT.md`'s 400/404 convention
+promises. The fix is just moving those four onto the `case` line itself,
+comma-separated like the others:
+
+```go
+// stores/internal/connectapi/errors.go — corrected case
+```
+
+Now the proto file for `baskets`, following `CONTRACT.md`'s own request/response
+shape convention (thin, one field per concern, server-generated IDs never
+accepted from the client per ADL 0009):
+
+```proto
+
+```
+
+`StartBasketRequest` is empty — no fields at all — since the basket ID is
+server-generated (ADL 0009) and nothing else about starting a basket needs input
+from the caller. That's a genuinely different shape from every one of `stores`'
+`Create*` requests, which all take at least a `name`/`location`; `Basket` has no
+such initial data to supply.
+
+You'll need to run this through your `buf generate` pipeline (per ADL 0003) to
+produce `basketspb`/`basketspbconnect` before any of the Go code below compiles.
+
+```go
+// baskets/internal/connectapi/server.go
+```
+
+```go
+// baskets/internal/connectapi/proto.go
+```
+
+```go
+// baskets/internal/connectapi/errors.go
+```
+
+```go
+// baskets/internal/connectapi/basket.go
+```
+
+And the wiring — `module.go` gains the `Server`, `main.go` uncomments the route:
+
+```go
+// baskets/internal/module.go — Server field added, constructed in New
+type Module struct {
+    ...
+    ConnectServer *connectapi.Server
+}
+```
+
+```go
+// baskets/internal/module.go — inside New, after the use cases are built
+```
+
+```go
+// baskets/cmd/service/main.go — RPC route uncommented
+path, connectHandler := basketspbconnect.NewBasketsServiceHandler(mod.ConnectServer)
+router.Handle(path, connectHandler.ServeHTTP)
+```
+
+`quantity` in the proto is `int32`, requiring the explicit
+`int32(item.Quantity)` cast in `toProtoBasket` — `domain.Item.Quantity` is a
+plain Go `int`, which `stores` never had to convert since none of its domain
+fields needed a numeric proto type at all (`Store`/`Product` are all strings,
+bools, and `float64`, which map directly). This is a small, easy-to-miss thing
+worth having flagged rather than let silently compile-error on you.
+
+Run `buf generate`, then `go build ./...` and `go vet ./...` from
+`depot-baskets/baskets` once the generated `basketspb`/`basketspbconnect`
+packages exist. Let me know what comes back — and whether you want the `stores`
+errors.go fix applied there now too, or left as noted for you to patch directly.
+
+#### Testing RPC endpionts
+
+Nice — that closes Step 7 clean, no errors on generation or build. That's every
+layer of `baskets` now built: `domain` → `events` → `catalog` → `postgres` →
+`application` → `connectapi`, plus the ADL 0015 fix backported to both services.
+
+Before Step 8, there's a scoping question worth settling.
+`journey_progress.md`'s own Phase 5 (the _overall_ project close-out, covering
+both `baskets` and `depot`) already promises "end-to-end event flow checked
+(create a store/product → confirm both caches pick it up independently)" — that
+specific check needs `depot` to exist too, which it doesn't yet (Phase 4 hasn't
+started). So I don't think we should try to do _that_ full check right now. What
+we can meaningfully verify today is `baskets` alone, live, talking to a real
+`stores` that's already running — proving the one cache, not both.
+
+Concretely, with all containers up (`make up`, confirming
+`stores`/`baskets`/`postgres`/`nats` are healthy via `make ps`), here's a real
+end-to-end smoke test that exercises the entire chain we've built this whole
+Phase — real `stores` event, real projector consumption, real catalog
+validation, real basket mutation:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/stores.v1.StoresService/CreateStore \
+  -H "Content-Type: application/json" \
+  -H "Connect-Protocol-Version: 1" \
+  -d '{"name": "Smoke Test Grocer", "location": "1 Smoke Ave"}'
+```
+
+That returns a `store_id` — grab it, then add a product to it:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/stores.v1.StoresService/AddProduct \
+  -H "Content-Type: application/json" \
+  -H "Connect-Protocol-Version: 1" \
+  -d '{"store_id": "<STORE_ID_FROM_ABOVE>", "name": "Sourdough Loaf", "description": "Fresh baked", "sku": "SKU-SMOKE-1", "price": 5.00}'
+```
+
+That returns a `product_id`. Give the projector a second or two to actually
+consume `ProductAdded` off the `stores` stream (it should be near-instant, but
+it's a real async hop, not a synchronous call), then confirm the catalog cache
+actually picked it up — either by querying `basketsdb` directly:
+
+```bash
+make basketsdb/dev
+```
+
+```sql
+SELECT * FROM catalog_products WHERE sku = 'SKU-SMOKE-1';
+```
+
+— or by skipping straight to the real test, which is whether `baskets` itself
+now accepts that product:
+
+```bash
+curl -s -X POST http://127.0.0.1:8081/baskets.v1.BasketsService/StartBasket \
+  -H "Content-Type: application/json" \
+  -H "Connect-Protocol-Version: 1" \
+  -d '{}'
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8081/baskets.v1.BasketsService/AddItem \
+  -H "Content-Type: application/json" \
+  -H "Connect-Protocol-Version: 1" \
+  -d '{"basket_id": "<BASKET_ID_FROM_ABOVE>", "product_id": "<PRODUCT_ID_FROM_ABOVE>"}'
+```
+
+If that `AddItem` call succeeds, it's a genuinely meaningful result — it means a
+product that only ever existed because `stores` published an event, consumed
+entirely asynchronously by `baskets`' own NATS consumer, projected into
+`baskets`' own Postgres, was then validated by `AddItem`'s catalog check _inside
+a live transaction_ and accepted. That's the whole Phase 3 thesis proven
+end-to-end, not just each layer's unit tests passing in isolation.
+
+One negative case worth checking too, since it's the one we can't get from any
+earlier test: try `AddItem` with a `product_id` that was never created in
+`stores` at all (a made-up UUID) — it should come back `CodeNotFound` per
+`mapError`, not `CodeInternal`, confirming the ConnectRPC error-mapping layer is
+wired correctly end-to-end, not just correct in the Go source.
+
+Want to run through this now and report back what you get, or is there a
+different close-out shape you'd rather do first?
+
+#### Script Testing with http-connect.sh
+
+```bash
+
+```
+
+A few things worth explaining about the shape of this script, since it's not
+just a mechanical port of the `stores` version.
+
+**The `sleep 2` after the two `AddProduct` calls is the one genuinely new
+element** — nothing in the `stores` script needed it, because every one of its
+calls is synchronous end-to-end (the RPC handler itself waits on the use case,
+which waits on Postgres/NATS directly). Here, the path from "product exists in
+`stores`" to "product exists in `baskets`' catalog cache" goes through an
+entirely asynchronous hop — `stores` publishes, `baskets`' `Subscriber` consumes
+it off the stream on its own schedule — so there's a real, if normally
+sub-second, race between this script moving on to `AddItem` and the projector
+actually finishing its upsert. Two seconds is a generous margin for a local
+Docker setup; if `AddItem` intermittently fails with `NotFound` on the very
+first product but not the second, that's the race showing up, not a real bug —
+worth distinguishing from an actual regression if it happens.
+
+**The two-product, increment-then-decrement sequence isn't just padding** — it's
+deliberately exercising `AddItem`'s quantity-merge behavior (adding `PRODUCT_ID`
+twice should read back as `quantity: 2`, not two separate line entries) and
+`RemoveItem`'s decrement-not-delete path (removing it once should drop it to
+`quantity: 1`, still present, not gone) against real Postgres rows — both were
+verified in the application-layer test suite already, but only there; this is
+the first time either goes through the full HTTP → ConnectRPC → `application` →
+Postgres chain.
+
+**Four negative cases, not one**, each targeting a different layer of
+`mapError`: `CancelBasket` on an already-`checked_out` basket (a domain guard
+rejecting a state transition), `AddItem` against a real UUID `stores` never
+created (the catalog-miss path, `CodeNotFound`), a blank `productId` (domain
+validation, `CodeInvalidArgument`), and `Checkout` on a basket with zero items
+(a different `CodeInvalidArgument` path than the blank-productId one, confirming
+both guards map correctly, not just one of them by coincidence).
+
+One thing this script _can't_ verify, worth naming rather than letting it look
+covered: `AdjustProductPrice`'s sequence-guard fix (ADL 0015's price-delta
+idempotency) never gets exercised here, since neither `IncreaseProductPrice` nor
+`DecreaseProductPrice` gets called against the store/product this script
+creates. If you want that path checked too, it'd need `stores`' own price
+endpoints called against `PRODUCT_ID` before the `sleep`, then a direct
+`catalog_products` query (`make basketsdb/dev`) to confirm the adjusted price
+landed exactly once — happy to extend the script that way if you want it covered
+now rather than left implicit.
+
+Everything landed correctly this run — including the fix. `price: 6.5` matches
+the exact `5.00 → +2.00 → -0.50 → 6.50` math, `last_applied_seq: 120` confirms
+the guard column is populated with a real stream sequence rather than left at
+its default, and the blank-`productId` case now correctly returns
+`400 invalid_argument: "the product id cannot be blank"` instead of last time's
+incorrect `404`. All ten scenarios — quantity increment, decrement-not-delete,
+checkout, all four negative cases, and the price-delta cache — now match
+expectations exactly. That closes out the verification we set out to do for this
+piece of Step 8. Two things are worth carrying forward rather than treating as
+fully closed, both of which we already named honestly along the way rather than
+discovering now: the `AdjustProductPrice` sequence guard has been proven to
+compute the _correct_ result under normal operation, but not proven to actually
+block a genuine redelivery-after-crash duplicate (that needs a dedicated
+failure-injection test, not curl calls against a healthy system); and the async
+projector race (`sleep 2`) worked fine here but is still a timing assumption,
+not a guarantee — a slower CI environment or a heavily loaded broker could in
+principle need longer. At this point `baskets` has: full
+domain/event/catalog/postgres/application coverage via unit and integration
+tests, a live end-to-end RPC verification against real `stores`/Postgres/NATS,
+and two real correctness bugs found and fixed along the way (the blank-productId
+ordering issue, and ADL 0015's cross-service publish-duplication fix). That's a
+solid stopping point for Step 8's scope on `baskets` specifically — the
+remaining Step 8 items from the Phase plan (`CONTRACT.md` for `baskets`,
+`system-state.md` update, `journey_progress.md` close-out with the deferred
+reminders we've been collecting) are documentation, not more code or testing.
+Want me to draft those three now — `baskets/CONTRACT.md`, the `system-state.md`
+diff, and the full `journey_progress.md` Phase 3 close-out (including the
+`BasketCheckedOut` payload-thinness reminder for Phase 4/5, and the
+newly-deferred redelivery-failure-injection test) — to actually close out this
+Phase, or is there something else you want to check first?

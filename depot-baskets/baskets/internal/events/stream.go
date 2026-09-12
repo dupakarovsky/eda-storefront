@@ -2,9 +2,10 @@
 package events
 
 const (
-	StreamName = "baskets"
+	BasketsStreamName = "baskets"
+	StoresStreamName  = "stores"
 )
 
-var StreamSubjects = []string{
+var BasketsStreamSubjects = []string{
 	"baskets.basket.*",
 }

@@ -132,9 +132,9 @@ basketsdb/dev:
 ## ----------------------------------------------------------------------------
 ## -- nats inspection ---
 ## ----------------------------------------------------------------------------
-
 .PHONY: nats/baskets
 nats/baskets:
+	# docker run --rm --network eda-storefront_eda-net natsio/nats-box:latest  nats --server nats://nats:4222 stream info baskets
 	docker run --rm --network eda-storefront_eda-net natsio/nats-box:latest  nats --server nats://nats:4222 stream info baskets
 
 ## ----------------------------------------------------------------------------

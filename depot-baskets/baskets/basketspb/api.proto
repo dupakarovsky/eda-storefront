@@ -1,0 +1,80 @@
+syntax = "proto3"; 
+
+package baskets.v1; 
+
+option go_package = "github.com/dupakarovsky/eda-storefront/baskets/basketspb;basketspb";
+
+// ==== Data types ============================================================
+message Item {
+  string product_id = 1; 
+  int32 quantity = 2;
+}
+
+// each Basket carries in a Item array
+message Basket {
+    string id = 1;
+    string status = 2;
+    repeated Item items = 3;
+}
+
+
+// ==== Messages ============================================================
+
+// === StartBasket === 
+message StartBasketRequest {}
+message StartBasketResponse {
+    Basket basket = 1;
+}
+
+// === AddItem === 
+message AddItemRequest {
+    string basket_id = 1;
+    string product_id = 2;
+}
+message AddItemResponse {
+    Basket basket = 1;
+}
+
+// === RemoveItem ===
+message RemoveItemRequest {
+    string basket_id = 1;
+    string product_id = 2;
+}
+message RemoveItemResponse {
+    Basket basket = 1;
+}
+
+// === Checkout ===
+message CheckoutRequest {
+    string basket_id = 1;
+}
+message CheckoutResponse {
+    Basket basket = 1;
+}
+
+// === CancelBasket ===
+message CancelBasketRequest {
+    string basket_id = 1;
+}
+message CancelBasketResponse {
+    Basket basket = 1;
+}
+
+// === GetBasket === 
+message GetBasketRequest {
+    string basket_id = 1;
+}
+message GetBasketResponse {
+    Basket basket = 1;
+}
+
+// ==== Services ============================================================
+
+service BasketsService {
+    rpc StartBasket(StartBasketRequest) returns (StartBasketResponse);
+    rpc AddItem(AddItemRequest) returns (AddItemResponse);
+    rpc RemoveItem(RemoveItemRequest) returns (RemoveItemResponse);
+    rpc Checkout(CheckoutRequest) returns (CheckoutResponse);
+    rpc CancelBasket(CancelBasketRequest) returns (CancelBasketResponse);
+    rpc GetBasket(GetBasketRequest) returns (GetBasketResponse);
+}

@@ -1,9 +1,10 @@
 // baskets/internal/catalog/product.go
 package catalog
 
-// Product will capture the information from a product which
-// was added from a a store to their inventory. The information is
-// collected from Event that was into the jetstream
+// Product represents a product added by a stores. The information
+// from a product comes by subscribing to the  stores.product.*
+// stream. Any message published is consumed by baskets and
+// inserted into the basketsdb database (catalog_products) table
 type Product struct {
 	ID          string
 	StoreID     string
