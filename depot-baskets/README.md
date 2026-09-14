@@ -1891,3 +1891,177 @@ way `RemoveItem`'s domain signature needed `storeID` to disambiguate.
 Copy these four files into `depot/internal/events/`, then run `go build ./...`
 from the `depot` module to confirm it compiles. Let me know what you get, and
 any questions before Step 4 — the `catalog` package.
+
+### Step 4 -- Catalog Package
+
+```go
+// depot/internal/catalog/store.go
+```
+
+```go
+// depot/internal/catalog/product.go
+```
+
+```go
+// depot/internal/catalog/repository.go
+```
+
+```go
+// depot/internal/catalog/project.go
+```
+
+**What's here, and one real design decision that's new in `depot`, not just a
+port.**
+
+Three of these four files (`store.go`, `product.go`, `project.go`) are
+structurally identical to `baskets`' equivalents — same envelope/payload types,
+same switch-on-`EventName` dispatch, same sequence-guarded idempotent price
+adjustment (`AdjustProductPrice`, carrying forward the `last_applied_seq` fix
+`baskets` had to discover mid-Phase-3; `depot` gets it from the start, per the
+"carried into Phase 4" note in `journey_progress.md`).
+
+`repository.go` is where I made a real choice: I added `FindStoreByID` to the
+interface, which `baskets`' `catalog.Repository` never needed. That's a direct
+consequence of `AddItem`'s new signature from Step 1 — `depot`'s `AddItem` use
+case (Step 6) needs to resolve a `*catalog.Store` (for
+`StoreName`/`StoreLocation`) in addition to validating the product, since
+`Stops` are keyed by store and carry denormalized store details. `baskets`'
+`AddItem` only ever needed product validation, never a store lookup, so this
+method genuinely didn't exist to reuse — it's new surface area, not a port.
+
+One thing to flag before Step 5: because `AddItem` will need _two_ catalog
+lookups instead of `baskets`' one, the application-layer use case's transaction
+will do a store lookup, a product lookup, then the aggregate mutation, then the
+save — a slightly heavier `WithLock` callback than `baskets.AddItem`'s. Nothing
+structurally different, just worth knowing going in.
+
+Copy these four files into `depot/internal/catalog/`, then `go build ./...` from
+the `depot` module. Let me know what you get, and any questions on the
+`FindStoreByID` addition before we move to Step 5 — the `postgres` package
+(repositories + migrations).
+
+### Step 5 -- Postgres Layer
+
+Two schema decisions to make explicit up front, then the code. First, since you
+asked me to defer `initiated_at`/`completed_at` to "their proper time," this is
+that time — but as discussed, they live on the row, not on the domain event.
+Second, `depot`'s `catalog_products` table gets `last_applied_seq` baked in from
+the migration's first version, rather than needing a third migration bolted on
+mid-Step the way `baskets` did — we already know it's needed, so there's no
+reason to rediscover that gap.
+
+**Migrations:**
+
+```sql
+-- depot/migrations/000001_create_shopping_lists.up.sql
+CREATE TABLE shopping_lists (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    initiated_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE shopping_list_stops (
+    shopping_list_id TEXT NOT NULL REFERENCES shopping_lists(id) ON DELETE CASCADE,
+    store_id TEXT NOT NULL,
+    store_name TEXT NOT NULL,
+    store_location TEXT NOT NULL,
+    PRIMARY KEY (shopping_list_id, store_id)
+);
+
+CREATE TABLE shopping_list_items (
+    shopping_list_id TEXT NOT NULL,
+    store_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    PRIMARY KEY (shopping_list_id, store_id, product_id),
+    FOREIGN KEY (shopping_list_id, store_id)
+        REFERENCES shopping_list_stops (shopping_list_id, store_id) ON DELETE CASCADE
+);
+```
+
+```sql
+-- depot/migrations/000001_create_shopping_lists.down.sql
+DROP TABLE IF EXISTS shopping_list_items;
+DROP TABLE IF EXISTS shopping_list_stops;
+DROP TABLE IF EXISTS shopping_lists;
+```
+
+```sql
+-- depot/migrations/000002_create_catalog.up.sql
+CREATE TABLE catalog_stores (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    location TEXT NOT NULL,
+    participating BOOLEAN NOT NULL DEFAULT false
+);
+
+CREATE TABLE catalog_products (
+    id TEXT PRIMARY KEY,
+    store_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    sku TEXT NOT NULL,
+    price NUMERIC NOT NULL,
+    last_applied_seq BIGINT NOT NULL DEFAULT 0
+);
+```
+
+```sql
+-- depot/migrations/000002_create_catalog.down.sql
+DROP TABLE IF EXISTS catalog_products;
+DROP TABLE IF EXISTS catalog_stores;
+```
+
+**Shared plumbing** (identical to `baskets`', just relocated to `depot`'s own
+`postgres` package — no changes, included for completeness):
+
+```go
+// depot/internal/postgres/interface.go
+```
+
+```go
+// depot/internal/postgres/txcontext.go
+```
+
+**`catalog_repository.go`** — same shape as `baskets`', with `FindStoreByID`
+added:
+
+```go
+// depot/internal/postgres/catalog_repository.go
+```
+
+**`shopping_list_repository.go`** — this one's genuinely new, not a port:
+
+```go
+// depot/internal/postgres/shopping_list_repository.go
+```
+
+**Walking through the two things that are genuinely new here, not adapted from
+`baskets`:**
+
+The `initiated_at`/`completed_at` columns are set via a `CASE`/`COALESCE` pair
+rather than the application layer passing timestamps in explicitly.
+`EXCLUDED.initiated_at` computes `now()` only when the _incoming_ status is
+`'active'`; `COALESCE(shopping_lists.initiated_at, ...)` then means once that
+column is non-null, it's never overwritten on subsequent saves — so a list that
+goes `active → canceled` keeps its original `initiated_at` rather than losing
+it. This is exactly the design we discussed: the domain struct carries no
+timestamp fields at all (as decided back at Step 1), and the repository derives
+"when did this happen" purely from _which status is being persisted_, using the
+database's own clock as the source of truth rather than trusting a timestamp
+handed in from the application layer.
+
+Second: `replaceStops` deletes and reinserts two tables, not one — items first
+(the child, due to the composite foreign key), then stops — every `Save`. This
+is `baskets`' delete-then-reinsert pattern (chosen there for simplicity over a
+diff-based sync, per Phase 3's Step 5 notes) extended one level deeper, since
+`Stops` is a nested structure (`map[storeID]*Stop{Items}`) rather than
+`Basket`'s flat `[]Item`.
+
+Go ahead and place the two migration pairs in `depot/migrations/`, and the four
+Go files in `depot/internal/postgres/`. Run your migration tool against
+`depotdb` (`golang-migrate`, per ADL 0003) and then `go build ./...` from the
+`depot` module. Let me know how both go, and any questions on the timestamp
+handling before we move to Step 6 — the `application` layer.

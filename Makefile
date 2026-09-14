@@ -68,12 +68,12 @@ migrate/baskets/down:
 
 ## --- Depot DB -- 
 migrate/depot/up:
-	@migrate -path depot/migrations \
+	@migrate -path depot-baskets/depot/migrations \
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/depotdb?sslmode=disable" \
 		up
 
 migrate/depot/down:
-	@migrate -path depot/migrations \
+	@migrate -path depot-baskets/depot/migrations \
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/depotdb?sslmode=disable" \
 		down 1
 

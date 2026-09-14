@@ -54,7 +54,13 @@ type productPriceDeltaPayload struct {
 // what event that originated that message.
 func Project(repo Repository, logger *slog.Logger) foundationnats.MessageHandler {
 
-	// returns the handler function that...
+	// returns the handler function that will take a jetstream Mesesage Data property,
+	// which contains the JSON data from the concrete Payload type published either
+	// by the "Store" or "Product" aggregates, and unmashal it into an local
+	// envelope. It'll then evaluate the EventName to find out which event was
+	// published. If it's a 'Store' aggregate event it'll pupulate the catalog_store
+	// table. If it's an 'Product' aggreate event, it'll populate the catalgo_product
+	// table
 	handler := func(ctx context.Context, msg jetstream.Msg) error {
 
 		var env envelope
