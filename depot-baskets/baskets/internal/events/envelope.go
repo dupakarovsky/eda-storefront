@@ -17,7 +17,9 @@ type Envelope struct {
 	Data        json.RawMessage `json:"data"`
 }
 
-// NewEnvelope will onc
+// NewEnvelope will convert the domain Eventy type to its proper Payload type,
+// convert the struct into json and added to an Envelope struct to be
+// published to the stream
 func NewEnvelope(event domain.Event) (Envelope, error) {
 
 	//  convert the event concrete type to it's proper Payload type

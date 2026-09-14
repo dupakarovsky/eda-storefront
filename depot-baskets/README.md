@@ -1848,3 +1848,46 @@ the domain's.
 Copy this into `depot/internal/domain/shopping_list_test.go` and run
 `go test ./internal/domain/...` from the `depot` module. Every test should pass.
 Let me know what you get.
+
+### Step 3 -- Events package
+
+```go
+// depot/internal/events/stream.go
+```
+
+```go
+// depot/internal/events/subject.go
+```
+
+```go
+// depot/internal/events/payload.go
+```
+
+```go
+// depot/internal/events/envelope.go
+```
+
+**What's here — this one's a near-direct port, so only two things are worth
+calling out rather than a full walkthrough.**
+
+First, the subject/stream naming: `depot`'s stream subjects are
+`depot.shopping_list.*`, matching `baskets.basket.*`'s `service.aggregate.*`
+convention exactly, and `aggregateFor` maps all six event types to the single
+string `"shopping_list"` — same flat single-aggregate-per-service shape
+`baskets` has with `"basket"`. Worth noting this immediately obsoletes the
+`depotStreamName`/`depotStreamSubjects` constants currently sitting inline in
+`depot_module.go` from Phase 2 (the `-- TEMPORARY --` block) — we'll swap
+`Module.New` over to importing this `events` package instead of its own local
+constants when we get to Step 6, so don't touch `depot_module.go` yet, just
+flagging it's coming.
+
+Second, `ItemAdded`'s payload carries `StoreID` alongside `ProductID`/`Quantity`
+— unlike `baskets`' `ItemAddedPayload`, which only has `ProductID`/`Quantity`.
+That's a direct, necessary consequence of `Stops` being store-keyed: a
+downstream consumer of this event (should one ever exist) can't make sense of
+"add this product" without knowing which store's stop it belongs to, the same
+way `RemoveItem`'s domain signature needed `storeID` to disambiguate.
+
+Copy these four files into `depot/internal/events/`, then run `go build ./...`
+from the `depot` module to confirm it compiles. Let me know what you get, and
+any questions before Step 4 — the `catalog` package.
