@@ -1708,3 +1708,143 @@ convention) as the next message, then we do the check-in per the skill before
 moving to Step 2 (the domain test suite).
 
 Ready for me to write Step 1?
+
+### Step 1 Shopping List Domain
+
+Let's start with the domain layer — four files, mirroring `baskets`' Step 1
+split (aggregate, status, events, repository interface).
+
+```go
+// depot/internal/domain/shopping_list_status.go
+```
+
+```go
+// depot/internal/domain/events.go
+```
+
+```go
+// depot/internal/domain/shopping_list.go
+```
+
+```go
+// depot/internal/domain/shopping_list_repository.go
+```
+
+**What's happening here, and two deliberate divergences from the book worth
+flagging:**
+
+The overall shape mirrors `Basket` closely — status guards on every mutating
+method, an `Event` returned alongside the error so the caller (the future
+`application` layer) can publish it, a `Reconstitute` constructor for the
+postgres layer to rehydrate from. `Stops` is the one real structural difference:
+a `map[string]*Stop` keyed by store ID, each holding its own denormalized
+`StoreName`/`StoreLocation`/`Items`, so a shopping list genuinely reads as
+"here's what to gather from each store," not just a flat cart.
+
+First divergence: `AddItem` here takes no explicit `quantity` parameter, unlike
+the book's `AddItem(store, product, quantity int)`. I chose to match
+`baskets.AddItem`'s convention instead — one unit added per call, incremented on
+repeat — for consistency across the two services' APIs, since that's the pattern
+the storefront (Project 6) will eventually call against for carts and,
+presumably, order fulfillment alike. If you'd rather keep the book's
+explicit-quantity signature (useful if `ordering` later wants to hand `depot` a
+whole basket's worth of quantities in fewer calls), that's a one-method change
+now, before anything else depends on the shape — worth deciding here rather than
+after Step 6 wires it in.
+
+Second: I added `ItemAdded`/`ItemRemoved` events, which the book's version
+doesn't emit at all — `AddItem` in the book never calls anything event-related.
+I added them purely for symmetry with `baskets`' event set, on the theory that a
+consistent "every mutation gets an event" convention across services is worth
+more than exactly matching the book here, since nothing in the roadmap says a
+future consumer needs them — same "TBD" status `system-state.md` already carries
+for `depot`'s full event list. If you'd rather keep `depot` lean and only emit
+the four lifecycle events the book actually defines, that's easy to trim now.
+
+Also note `AddItem`'s signature takes `storeName`/`storeLocation` as plain
+strings rather than a `*Store` struct — this is intentional, matching the
+"domain doesn't import `catalog`" separation ADL 0004/Phase 3 already
+established for `baskets`. The `application` layer (Step 6) will be the one
+resolving a `catalog.Store`/`catalog.Product` and unpacking the fields it needs
+before calling in here.
+
+Copy these four files into `depot/internal/domain/`, then run `go build ./...`
+from the `depot` module — there's no test suite yet (that's Step 2), so this is
+just confirming it compiles cleanly. Let me know what you get, and any thoughts
+on the two divergences above before we move to Step 2.
+
+#### Shopping List Initiated to Completed
+
+Good catch — that's a real gap I left implicit. `Initiate()` isn't triggered
+automatically by anything inside the domain; it has to be called explicitly, the
+same way `Basket.Checkout()` is explicitly called via a `Checkout` RPC rather
+than firing itself once some condition is met.
+
+The way I've designed it, `Initiate()` is the `ShoppingList`'s equivalent of
+"picking has begun" — someone (a warehouse worker, in the book's framing) has
+started actually walking the stores and gathering the items on the list. In our
+system, since we have no `Bot` domain to auto-trigger this, it has to be a
+distinct application-layer use case with its own ConnectRPC method — call it
+`InitiateShoppingList`, taking just a `shoppingListID`, exactly like `Checkout`
+in `baskets` takes just a `basketID`. Whoever's driving fulfillment (today: your
+curl script; eventually, presumably some depot-side operator UI, though that's
+out of scope for this system per the roadmap) would call it once they're ready
+to lock the list and start gathering.
+
+The practical effect of that transition, worth being explicit about:
+`AddItem`/`RemoveItem` both guard on `Status == ShoppingListPendingStatus`, so
+once `Initiate()` fires, the list's `Stops` are frozen — no more additions or
+removals are possible from that point forward. That's a deliberate mirror of
+`Basket.Checkout()` sealing the basket's contents, just one state earlier in
+`depot`'s case (`pending → active` here, versus `open → checked_out` there being
+the final seal). So the full call sequence for a `ShoppingList` in this project
+would be: `CreateShoppingList` → some number of `AddItem`/`RemoveItem` calls
+while `pending` → `InitiateShoppingList` (freezes contents, moves to `active`) →
+`CompleteShoppingList` (moves to `completed`, the event `ordering` will
+eventually consume) — or `CancelShoppingList` at any point before completion.
+
+Does that match what you had in mind, or were you picturing `Initiate()` firing
+automatically off some other signal (e.g. the moment the first item is added,
+rather than a standalone call)? If it's the latter, we'd fold `Initiate`'s
+effect into `AddItem` itself and drop it as a separate public method — but I'd
+lean against that, since it would mean a `ShoppingList` with even one item can
+never be edited again, which seems too eager compared to `Basket`'s much
+longer-lived "open" window.
+
+### Stop 2 - Testing ShoppingList
+
+Domain tests, one file, covering every guard and every event emission for the
+five behaviors:
+
+```go
+// depot/internal/domain/shopping_list_test.go
+```
+
+**What's here, and a couple of choices worth flagging:**
+
+Every guard on every method has its own dedicated failure test (`AddItem`'s
+three guards, `RemoveItem`'s two, `Initiate`'s one, `Complete`'s two, `Cancel`'s
+two), plus a success case per method that also asserts the emitted event's
+concrete type and field values — the same density `journey_progress.md`
+describes for `store_test.go`/`baskets_basket_test.go`.
+`TestShoppingList_AddItem_BlockedAfterInitiate` is the one test with no `Basket`
+equivalent worth calling out: it specifically proves the freeze-on-`Initiate`
+behavior we discussed a couple of messages back, since that's a real behavioral
+claim, not just an implementation detail — worth pinning down with a test rather
+than trusting the guard reads correctly by eye.
+
+`TestShoppingList_RemoveItem_SameProductDifferentStores` is the other one worth
+flagging — it directly exercises the reasoning behind requiring `storeID` in
+`RemoveItem`'s signature (your call from a few messages ago), proving that
+removing a product from one store's stop genuinely leaves an identically-IDed
+product in a different store's stop untouched.
+
+One thing I did _not_ test: `NewShoppingList`'s domain-level `id` is never
+validated for blankness (same as `NewBasket`'s `id` in `baskets` — that
+constructor trusts its caller). That's consistent with ADL 0009: ID generation
+and validation are the `connectapi` layer's concern via `uuid.NewString()`, not
+the domain's.
+
+Copy this into `depot/internal/domain/shopping_list_test.go` and run
+`go test ./internal/domain/...` from the `depot` module. Every test should pass.
+Let me know what you get.
