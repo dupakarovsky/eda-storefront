@@ -7,6 +7,7 @@ import (
 
 	"github.com/dupakarovsky/eda-storefront/depot/internal/application"
 	"github.com/dupakarovsky/eda-storefront/depot/internal/catalog"
+	"github.com/dupakarovsky/eda-storefront/depot/internal/connectapi"
 	"github.com/dupakarovsky/eda-storefront/depot/internal/events"
 	"github.com/dupakarovsky/eda-storefront/depot/internal/postgres"
 	foundationconfig "github.com/dupakarovsky/eda-storefront/foundation/config"
@@ -29,6 +30,8 @@ type Module struct {
 	Publisher  *foundationnats.Publisher
 	Subscriber *foundationnats.Subscriber
 
+	CatalogRepo catalog.Repository
+
 	CreateShoppingListUC   *application.CreateShoppingList
 	AddItemUC              *application.AddItem
 	RemoveItemUC           *application.RemoveItem
@@ -37,7 +40,7 @@ type Module struct {
 	CancelShoppingListUC   *application.CancelShoppingList
 	GetShoppingListUC      *application.GetShoppingList
 
-	// ConnectServer *connectapi.Server
+	ConnectServer *connectapi.Server
 }
 
 // New will construct a new Module struct for this service
@@ -97,19 +100,6 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		return nil, err
 	}
 
-	// -- TEMPORARY ----------------------
-	// temporary stream name for the depot service
-	// const (
-	// 	storesStreamName = "stores"
-	// 	depotStreamName  = "depot"
-	// )
-
-	// depotStreamSubjects defines the subjects in the "depot" stream that can be subscribed to
-	// var depotStreamSubjects = []string{
-	// 	"depot.depot.*",
-	// }
-	// -- TEMPORARY ----------------------
-
 	// create a new jetstream interface. the "depot" services ensures "depot" stream,
 	// so it owns that stream (it'll create the stream)
 	_, err = foundationnats.EnsureStream(ctx, js, events.DepotStreamName, events.DepotStreamSubjects)
@@ -147,6 +137,28 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		foundationnats.PublishDeadLetter(publisher, "depot", logger),
 	)
 
+	//============================================================================
+	// CONNECTRPC SERVER INITIALIZATION
+	//============================================================================
+
+	createShoppingListUC := application.NewCreateShoppingList(shoppingListRepo, publisher, logger)
+	addItemUC := application.NewAddItem(shoppingListRepo, catalogRepo, publisher, logger)
+	removeItemUC := application.NewRemoveItem(shoppingListRepo, publisher, logger)
+	initiateShoppingListUC := application.NewInitiateShoppingList(shoppingListRepo, publisher, logger)
+	completeShoppingListUC := application.NewCompleteShoppingList(shoppingListRepo, publisher, logger)
+	cancelShoppingListUC := application.NewCancelShoppingList(shoppingListRepo, publisher, logger)
+	getShoppingListUC := application.NewGetShoppingList(shoppingListRepo)
+
+	connectServer := connectapi.NewServer(
+		createShoppingListUC,
+		addItemUC,
+		removeItemUC,
+		initiateShoppingListUC,
+		completeShoppingListUC,
+		cancelShoppingListUC,
+		getShoppingListUC,
+	)
+
 	return &Module{
 		Logger:     logger,
 		Pool:       pool,
@@ -155,13 +167,17 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		Publisher:  publisher,
 		Subscriber: subscriber,
 
-		CreateShoppingListUC:   application.NewCreateShoppingList(shoppingListRepo, publisher, logger),
-		AddItemUC:              application.NewAddItem(shoppingListRepo, catalogRepo, publisher, logger),
-		RemoveItemUC:           application.NewRemoveItem(shoppingListRepo, publisher, logger),
-		InitiateShoppingListUC: application.NewInitiateShoppingList(shoppingListRepo, publisher, logger),
-		CompleteShoppingListUC: application.NewCompleteShoppingList(shoppingListRepo, publisher, logger),
-		CancelShoppingListUC:   application.NewCancelShoppingList(shoppingListRepo, publisher, logger),
-		GetShoppingListUC:      application.NewGetShoppingList(shoppingListRepo),
+		CatalogRepo: catalogRepo,
+
+		CreateShoppingListUC:   createShoppingListUC,
+		AddItemUC:              addItemUC,
+		RemoveItemUC:           removeItemUC,
+		InitiateShoppingListUC: initiateShoppingListUC,
+		CompleteShoppingListUC: completeShoppingListUC,
+		CancelShoppingListUC:   cancelShoppingListUC,
+		GetShoppingListUC:      getShoppingListUC,
+
+		ConnectServer: connectServer,
 	}, nil
 }
 

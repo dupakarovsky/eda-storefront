@@ -1,0 +1,13 @@
+version: v2
+
+# tells buf that basketspb is a self-contained proto module
+modules:
+    - path: depotpb
+# turn on buf's built in linter: STANDARD is a sane default
+lint:
+    use:
+        - STANDARD
+# turn on buf's breaking changes detector. FILE is a sane default
+breaking:
+    use:
+        - FILE

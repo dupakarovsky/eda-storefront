@@ -1,0 +1,101 @@
+// depot/depotpb/api.proto
+syntax = "proto3";
+
+package depot.v1;
+
+option go_package = "github.com/dupakarovsky/eda-storefront/depot/depotpb;depotpb";
+
+
+// ==== Data types ============================================================
+
+message Item {
+  string product_id = 1;
+  int32 quantity = 2;
+}
+
+message Stop {
+  string store_id = 1;
+  string store_name = 2;
+  string store_location = 3;
+  repeated Item items = 4;
+}
+
+message ShoppingList {
+  string id = 1;
+  string status = 2;
+  repeated Stop stops = 3;
+}
+
+// ==== Messages ============================================================
+
+// === CreateShoppingList ===
+message CreateShoppingListRequest {}
+
+message CreateShoppingListResponse {
+  ShoppingList shopping_list = 1;
+}
+
+// === AddItem ===
+message AddItemRequest {
+  string shopping_list_id = 1;
+  string store_id = 2;
+  string product_id = 3;
+}
+message AddItemResponse {
+  ShoppingList shopping_list = 1;
+}
+
+// === RemoveItem ===
+message RemoveItemRequest {
+  string shopping_list_id = 1;
+  string store_id = 2;
+  string product_id = 3;
+}
+message RemoveItemResponse {
+  ShoppingList shopping_list = 1;
+}
+
+
+// === InitiateShoppingList ===
+message InitiateShoppingListRequest {
+  string shopping_list_id = 1;
+}
+message InitiateShoppingListResponse {
+  ShoppingList shopping_list = 1;
+}
+
+// === CompleteShoppingList ===
+message CompleteShoppingListRequest {
+  string shopping_list_id = 1;
+}
+message CompleteShoppingListResponse {
+  ShoppingList shopping_list = 1;
+}
+
+// === CancelShoppingList ===
+message CancelShoppingListRequest {
+  string shopping_list_id = 1;
+}
+message CancelShoppingListResponse {
+  ShoppingList shopping_list = 1;
+}
+
+// === GetShoppingListRequest ===
+message GetShoppingListRequest {
+  string shopping_list_id = 1;
+}
+message GetShoppingListResponse {
+  ShoppingList shopping_list = 1;
+}
+
+// ==== Services ============================================================
+
+service DepotService {
+  rpc CreateShoppingList(CreateShoppingListRequest) returns (CreateShoppingListResponse);
+  rpc AddItem(AddItemRequest) returns (AddItemResponse);
+  rpc RemoveItem(RemoveItemRequest) returns (RemoveItemResponse);
+  rpc InitiateShoppingList(InitiateShoppingListRequest) returns (InitiateShoppingListResponse);
+  rpc CompleteShoppingList(CompleteShoppingListRequest) returns (CompleteShoppingListResponse);
+  rpc CancelShoppingList(CancelShoppingListRequest) returns (CancelShoppingListResponse);
+  rpc GetShoppingList(GetShoppingListRequest) returns (GetShoppingListResponse);
+}

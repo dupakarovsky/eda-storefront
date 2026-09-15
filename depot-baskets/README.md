@@ -2148,3 +2148,185 @@ still references the old shape correctly (nothing there changed), so this is
 purely a compile check on the new/changed files. Let me know what you get, and
 any questions on the `AddItem` two-lookup pattern or the module wiring before
 Step 7 — `connectapi`.
+
+#### Application Test Files
+
+Good instinct, and thank you — this also surfaces something I need to fix first:
+your `baskets` tests call `mod.CatalogRepo.CreateProduct(...)` directly to seed
+data, which means `baskets.Module` exposes its `CatalogRepository` as a public
+field. My Step 6 `depot/module.go` kept `catalogRepo` as an unexported local
+variable, only ever passed into `AddItem`'s constructor — it never surfaces on
+`Module` itself. That needs a small correction before these tests can work.
+
+**Correction to `depot/module.go`:**
+
+```go
+// depot/module.go — add CatalogRepo field to Module struct
+```
+
+```go
+// depot/module.go — populate the new field in New()'s return statement
+```
+
+Now the test files, following your `baskets` structure exactly — same
+`newTestModule`/`uniqueID` harness, same "seed via `CatalogRepo` directly,
+exercise real use cases against real Postgres/NATS" pattern.
+
+```go
+// depot/internal/application/testmodule_test.go
+```
+
+```go
+// depot/internal/application/create_shopping_list_test.go
+```
+
+```go
+// depot/internal/application/add_item_test.go
+```
+
+```go
+// depot/internal/application/remove_item_test.go
+```
+
+```go
+// depot/internal/application/initiate_shopping_list_test.go
+```
+
+```go
+// depot/internal/application/complete_shopping_list_test.go
+```
+
+```go
+// depot/internal/application/cancel_shopping_list_test.go
+```
+
+```go
+// depot/internal/application/get_shopping_list_test.go
+```
+
+**A few things worth flagging before you run these.**
+
+I deliberately left out a
+`TestCreateShoppingList_Execute_SucceedsAfterNATSRestart` equivalent to
+`baskets`' NATS-outage test. That test proved ADL 0015's message-ID idempotency
+works under a real reconnect — a genuine discovery at the time, worth proving
+once. `depot`'s `publishDomainEvent`/`publishWithRetry` are structurally
+identical code (same retry loop, same `Nats-Msg-Id` usage from day one, per the
+note carried into this Phase), so rerunning the exact same infrastructure-level
+proof here would mostly be confirming Go compiles the same logic the same way
+twice, not discovering anything new about `depot` specifically. If you'd rather
+have the belt-and-suspenders version anyway — say, to genuinely rule out
+something `depot`-specific interfering — I can add it, just say so.
+
+Second, notice `TestAddItem_Execute_Succeeds` and everything downstream of it
+seeds _two_ catalog rows (`CreateStore` then `CreateProduct`) where `baskets`'
+equivalent only ever seeded one (`CreateProduct` alone) — a direct, repeated
+consequence of `AddItem`'s two-lookup design from Step 6. Every test that
+exercises `AddItem` indirectly (`remove_item`, `initiate`, `complete`,
+`cancel`'s already-completed case) inherits that same two-step seed, which is
+why these files are noticeably more verbose than their `baskets` counterparts —
+not accidental duplication, just the real cost of `Stops` needing store data
+`Basket` never did.
+
+Third — `TestCompleteShoppingList_Execute_RejectsEmptyList` calls
+`InitiateShoppingListUC.Execute` directly on a list with zero items. That's
+legal per Step 1's design (`Initiate()` only checks `Status == pending`, no
+emptiness guard there — only `Complete()` enforces it), so this test is also a
+quiet confirmation that an empty list really can reach `active`, which is a real
+behavioral claim worth having pinned down rather than assumed.
+
+Copy `depot/module.go`'s two small edits in first, then these eight files into
+`depot/internal/application/`, then run
+`go test -v ./depot-baskets/depot/internal/application/` (matching the
+invocation style from your Step 2 output) against your live Postgres/NATS
+containers. Let me know what you get.
+
+### Step 7 ConnectAPI layer
+
+Seven RPCs this time (one more than `baskets`' six, for the extra `Initiate`
+step), plus a nested `Stops`/`Items` message shape that `baskets`' flat `Basket`
+never needed.
+
+**The proto file first — this one you'll need to run through `buf`/`protoc`
+yourself (per ADL 0003), same as `baskets_api.proto` was:**
+
+```protobuf
+
+```
+
+Note `AddItemRequest`/`RemoveItemRequest` both carry `store_id` alongside
+`shopping_list_id`/`product_id` — a direct, necessary consequence of `Stops`
+being store-keyed, and the API-layer manifestation of the same design your
+`RemoveItem` call already requires at the domain level.
+
+Run your usual `buf generate` (or `protoc` + `protoc-gen-connect-go`) against
+this to produce `depotpb/api.pb.go` and `depotpb/depotpbconnect/api.connect.go`
+before writing the Go files below — they depend on the generated types.
+
+**Now the hand-written `connectapi` package:**
+
+```go
+// depot/internal/connectapi/server.go
+```
+
+```go
+// depot/internal/connectapi/errors.go
+```
+
+```go
+// depot/internal/connectapi/proto.go
+```
+
+```go
+// depot/internal/connectapi/shopping_list.go
+```
+
+**`proto.go`'s `toProtoShoppingList` is the one piece with no `baskets`
+equivalent to copy from** — it's converting a `map[string]*domain.Stop` into a
+`[]*depotpb.Stop` slice, pulling `storeID` back out of the map key (since the
+domain model keys `Stops` by store ID, but the wire format needs it as an
+explicit field on each `Stop` message, not an implicit map key) and
+reconstructing the nested `Items` slice inside each one. Worth noting: map
+iteration order in Go is intentionally randomized, so two calls to
+`GetShoppingList` for the same list could return `stops` in a different order
+each time. Nothing in our design depends on stop ordering being stable, but it's
+a real, visible difference from `baskets`' `toProtoBasket`, which returns
+`Items` in the same order they're stored (a slice all the way down) — worth
+knowing if it ever surprises you in a curl response.
+
+**Now wiring `Module` and `main.go`** — two small, targeted edits, not full
+replacements:
+
+```go
+// depot/module.go — add ConnectServer field
+```
+
+```go
+// depot/module.go — add the connectapi import
+```
+
+```go
+// depot/module.go — construct ConnectServer and populate it in the returned Module
+```
+
+This replaces Step 6's inline `application.NewCreateShoppingList(...)` calls
+directly inside the `Module{}` literal with named local variables first —
+necessary because `NewServer` now needs the same UC pointers `Module`'s fields
+need, so they're constructed once and used twice.
+
+```go
+
+```
+
+```go
+// depot/cmd/service/main.go — add the import
+```
+
+That's the exact two-line uncomment `baskets`' own Phase 2→3 transition made in
+its `main.go`, now that `connectapi` genuinely exists to mount.
+
+Run `buf generate` (or your `protoc` equivalent) first, then place the four
+`connectapi` files, apply the `module.go`/`main.go` edits, and `go build ./...`
+from the `depot` module. Let me know how the codegen and build go, and any
+questions on the `toProtoShoppingList` map-to-slice conversion or the
+map-ordering note before we move to Step 8 — integration verification.

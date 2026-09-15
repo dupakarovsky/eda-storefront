@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/dupakarovsky/eda-storefront/depot"
+	"github.com/dupakarovsky/eda-storefront/depot/depotpb/depotpbconnect"
 	foundationconfig "github.com/dupakarovsky/eda-storefront/foundation/config"
 	foundationhttp "github.com/dupakarovsky/eda-storefront/foundation/http"
 	foundationloggin "github.com/dupakarovsky/eda-storefront/foundation/logging"
@@ -61,15 +62,15 @@ func main() {
 		foundationhttp.RecoveryMiddleware(logger),
 		foundationhttp.TimeoutMiddleware(cfg.Server.RequestTimeout),
 	)
-	// attach the heath route
-	router.Handle("GET /health", healthHTTPHandler(mod))
+	// build and connet the service handler to the router
+	path, connectHandler := depotpbconnect.NewDepotServiceHandler(mod.ConnectServer)
 
 	// build the router
 	handler := router.Build()
 
-	// RPC endpoint will be added later
-	// path, connectHandler := depotpbconnect.NewDepotServiceHandler(mod.ConnectServer)
-	// router.Handle(path, connectHandler.ServeHTTP)
+	// attach the heath route
+	router.Handle("GET /health", healthHTTPHandler(mod))
+	router.Handle(path, connectHandler.ServeHTTP)
 
 	//============================================================================
 	// SERVER INITIALIZATION

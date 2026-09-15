@@ -129,6 +129,11 @@ storesdb/dev:
 basketsdb/dev:
 	psql -h 127.0.0.1 -p 5433 -d basketsdb -U eda_dev
 
+.PHONY: depotdb/dev
+# connect to the storesdb as the edb_dev user
+depotdb/dev:
+	psql -h 127.0.0.1 -p 5433 -d depotdb -U eda_dev
+
 ## ----------------------------------------------------------------------------
 ## -- nats inspection ---
 ## ----------------------------------------------------------------------------
