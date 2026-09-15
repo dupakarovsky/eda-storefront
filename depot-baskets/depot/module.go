@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/dupakarovsky/eda-storefront/depot/internal/application"
+	"github.com/dupakarovsky/eda-storefront/depot/internal/catalog"
+	"github.com/dupakarovsky/eda-storefront/depot/internal/events"
+	"github.com/dupakarovsky/eda-storefront/depot/internal/postgres"
 	foundationconfig "github.com/dupakarovsky/eda-storefront/foundation/config"
 	foundationnats "github.com/dupakarovsky/eda-storefront/foundation/nats"
 	foundationpostgres "github.com/dupakarovsky/eda-storefront/foundation/postgres"
@@ -24,6 +28,14 @@ type Module struct {
 
 	Publisher  *foundationnats.Publisher
 	Subscriber *foundationnats.Subscriber
+
+	CreateShoppingListUC   *application.CreateShoppingList
+	AddItemUC              *application.AddItem
+	RemoveItemUC           *application.RemoveItem
+	InitiateShoppingListUC *application.InitiateShoppingList
+	CompleteShoppingListUC *application.CompleteShoppingList
+	CancelShoppingListUC   *application.CancelShoppingList
+	GetShoppingListUC      *application.GetShoppingList
 
 	// ConnectServer *connectapi.Server
 }
@@ -87,20 +99,20 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 
 	// -- TEMPORARY ----------------------
 	// temporary stream name for the depot service
-	const (
-		storesStreamName = "stores"
-		depotStreamName  = "depot"
-	)
+	// const (
+	// 	storesStreamName = "stores"
+	// 	depotStreamName  = "depot"
+	// )
 
 	// depotStreamSubjects defines the subjects in the "depot" stream that can be subscribed to
-	var depotStreamSubjects = []string{
-		"depot.depot.*",
-	}
+	// var depotStreamSubjects = []string{
+	// 	"depot.depot.*",
+	// }
 	// -- TEMPORARY ----------------------
 
 	// create a new jetstream interface. the "depot" services ensures "depot" stream,
 	// so it owns that stream (it'll create the stream)
-	_, err = foundationnats.EnsureStream(ctx, js, depotStreamName, depotStreamSubjects)
+	_, err = foundationnats.EnsureStream(ctx, js, events.DepotStreamName, events.DepotStreamSubjects)
 	if err != nil {
 		// if stream fails then close all connection pools and emit an error
 		nc.Close()
@@ -108,13 +120,17 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		return nil, fmt.Errorf("ensuring depot stream: %w", err)
 	}
 
-	logger.Info("🌊 stream ensured", "name", depotStreamName, "subjects", depotStreamSubjects)
+	logger.Info("🌊 stream ensured", "name", events.DepotStreamName, "subjects", events.DepotStreamSubjects)
 
 	// -----------------------
 	// Intialize a Publisher
 	// -----------------------
 	// publisher is the stream the "depot" domain will publish it's events to
 	publisher := foundationnats.NewPublisher(js)
+
+	// initiliaze the repositories for accessing catalog  tables
+	catalogRepo := postgres.NewCatalogRepository(pool)
+	shoppingListRepo := postgres.NewShoppingListRepository(pool)
 
 	// -----------------------
 	// Intialize a Subscriber
@@ -124,10 +140,10 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	subscriber := foundationnats.NewSubscriber(
 		"DEPOT-STORES-PROJECTOR",
 		js,
-		storesStreamName,
+		events.StoresStreamName,
 		logger,
 		foundationnats.StandardConsumerConfig("depot-stores-projector"),
-		placeholderHandler(logger),
+		catalog.Project(catalogRepo, logger),
 		foundationnats.PublishDeadLetter(publisher, "depot", logger),
 	)
 
@@ -138,6 +154,14 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		JS:         js,
 		Publisher:  publisher,
 		Subscriber: subscriber,
+
+		CreateShoppingListUC:   application.NewCreateShoppingList(shoppingListRepo, publisher, logger),
+		AddItemUC:              application.NewAddItem(shoppingListRepo, catalogRepo, publisher, logger),
+		RemoveItemUC:           application.NewRemoveItem(shoppingListRepo, publisher, logger),
+		InitiateShoppingListUC: application.NewInitiateShoppingList(shoppingListRepo, publisher, logger),
+		CompleteShoppingListUC: application.NewCompleteShoppingList(shoppingListRepo, publisher, logger),
+		CancelShoppingListUC:   application.NewCancelShoppingList(shoppingListRepo, publisher, logger),
+		GetShoppingListUC:      application.NewGetShoppingList(shoppingListRepo),
 	}, nil
 }
 
@@ -151,12 +175,12 @@ func (m *Module) Close() {
 
 // placeholderHandler function that will connect to the consumer stream and
 // pull events from it.
-func placeholderHandler(logger *slog.Logger) foundationnats.MessageHandler {
-
-	return func(ctx context.Context, msg jetstream.Msg) error {
-		logger.Info("received stores event (placeholder handler, no-op)",
-			"subject", msg.Subject(),
-		)
-		return nil
-	}
-}
+// func placeholderHandler(logger *slog.Logger) foundationnats.MessageHandler {
+//
+// 	return func(ctx context.Context, msg jetstream.Msg) error {
+// 		logger.Info("received stores event (placeholder handler, no-op)",
+// 			"subject", msg.Subject(),
+// 		)
+// 		return nil
+// 	}
+// }

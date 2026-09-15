@@ -2065,3 +2065,86 @@ Go files in `depot/internal/postgres/`. Run your migration tool against
 `depotdb` (`golang-migrate`, per ADL 0003) and then `go build ./...` from the
 `depot` module. Let me know how both go, and any questions on the timestamp
 handling before we move to Step 6 — the `application` layer.
+
+### Step 6- Application Layer
+
+Seven use cases this time, one more than `baskets`' six — `depot`'s two-stage
+freeze (`pending → active → completed`) needs a distinct `Initiate` step that
+`Checkout` alone covered for `baskets`.
+
+**Publish retry — identical port, just the package path:**
+
+```go
+// depot/internal/application/publish_retry.go
+```
+
+**Create — takes no input, mirrors `StartBasket`:**
+
+```go
+// depot/internal/application/create_shopping_list.go
+```
+
+**AddItem — the one with real new shape, two catalog lookups instead of one:**
+
+```go
+// depot/internal/application/add_item.go
+```
+
+**RemoveItem — takes `storeID` per your earlier call:**
+
+```go
+// depot/internal/application/remove_item.go
+```
+
+**Initiate — the new lifecycle step, freezes `Stops`:**
+
+```go
+// depot/internal/application/initiate_shopping_list.go
+```
+
+**Complete — the terminal step `ordering` will eventually consume:**
+
+```go
+// depot/internal/application/complete_shopping_list.go
+```
+
+**Cancel and Get — straight ports:**
+
+```go
+// depot/internal/application/cancel_shopping_list.go
+```
+
+```go
+// depot/internal/application/get_shopping_list.go
+```
+
+**Module wiring — this is where the Phase 2 placeholder finally gets replaced.**
+`depot_module.go` needs real changes, not just new files sitting alongside it:
+
+```go
+// depot/module.go — replaces the "-- TEMPORARY --" block and placeholderHandler
+```
+
+**What changed here, concretely, versus the Phase 2 skeleton:** the inline
+`-- TEMPORARY --` stream-name constants are gone, replaced by
+`depotevents.DepotStreamName`/`DepotStreamSubjects` from Step 3.
+`placeholderHandler` is gone entirely — `Subscriber` now wires in
+`catalog.Project(catalogRepo, logger)`, the real projector, same as `baskets`'
+Phase 3 Step 6. And `Module` gains all seven use case fields, constructed here
+and ready for `connectapi.Server` to receive in Step 7 — mirroring exactly how
+`baskets_server.go`'s `NewServer` takes UC pointers as constructor arguments.
+
+I deliberately didn't touch `depot_main.go` or `depot_http-health.go` yet —
+`main.go`'s router/RPC-wiring changes belong with Step 7 once `connectapi`
+actually exists to mount, same as `baskets`' Phase 2→3 transition kept `main.go`
+stable until the API layer showed up.
+
+Place the seven new files in `depot/internal/application/`, and replace
+`depot/module.go`'s content with the version above (note the package changed
+from a separate file layout — this assumes your existing `depot_module.go`
+becomes this file's content wholesale, not an addition alongside it). Run
+`go build ./...` from the `depot` module — it won't run yet since `main.go`
+still references the old shape correctly (nothing there changed), so this is
+purely a compile check on the new/changed files. Let me know what you get, and
+any questions on the `AddItem` two-lookup pattern or the module wiring before
+Step 7 — `connectapi`.
