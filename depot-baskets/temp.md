@@ -1,25 +1,62 @@
-Hello Claude, We're now ready to begin Phase 3 of the Depot+Baskets Project for the `Event-Drive Storefront in Go` series. To get up to speed with the goals of this project please start with the `roadmap.md` file in this project's directory. There are also some ADL files in this project's directory highlighting some of the early design decisions for this series of projects. The latest one is ADL 0014. The details of Phase 1 to 2 of the project are catalogued by the `journey_progress.md` file.
+Hello Claude, We're now ready to begin Phase 3 of the Depot+Baskets Project for
+the `Event-Drive Storefront in Go` series. To get up to speed with the goals of
+this project please start with the `roadmap.md` file in this project's
+directory. There are also some ADL files in this project's directory
+highlighting some of the early design decisions for this series of projects. The
+latest one is ADL 0014. The details of Phase 1 to 2 of the project are
+catalogued by the `journey_progress.md` file.
 
-We'll be using the /learning-journey skill to construct this series or projects. The profile information is up to date and here are important general guidelines to follow :
+We'll be using the /learning-journey skill to construct this series or projects.
+The profile information is up to date and here are important general guidelines
+to follow :
 
-- Code snippets are to be generated in the chat window, not created via 'create file' tool call inside the sandbox (Claude.ai).
-- The user creates the file and runs it, then reports back of the outcome after running it.
-- Each Phase is composed in Steps, after each Step do a Check-in for code review and follow-up questions.
-- Don't place comments in code snippets. Add only a comment line with the file path or to indicate a change whenever a code is updated. Let me know when if ready to begin and if you need more information just ask away.
+- Code snippets are to be generated in the chat window, not created via 'create
+  file' tool call inside the sandbox (Claude.ai).
+- The user creates the file and runs it, then reports back of the outcome after
+  running it.
+- Each Phase is composed in Steps, after each Step do a Check-in for code review
+  and follow-up questions.
+- Don't place comments in code snippets. Add only a comment line with the file
+  path or to indicate a change whenever a code is updated. Let me know when if
+  ready to begin and if you need more information just ask away.
 
-I've uploaded the files created so far to this Project's folder. The "depot", "baskets", as well as the "foundation" packages have had their names prefix to reflect the packages they belong to in order to avoid name collision: "dep_" for "depot" related files, "bsk_" for "basket" related files, "found_" for "foundation" related files.
+I've uploaded the files created so far to this Project's folder. The "depot",
+"baskets", as well as the "foundation" packages have had their names prefix to
+reflect the packages they belong to in order to avoid name collision: "dep\_"
+for "depot" related files, "bsk\_" for "basket" related files, "found\_" for
+"foundation" related files.
 
-Before presenting the Phase however, I think that in order to maintain code consistency with that's written for the "stores" package (since we'd want all package to be written in a similar manner) we might need to look at some of the code from "stores" in order to properly structure this next Phase.
+Before presenting the Phase however, I think that in order to maintain code
+consistency with that's written for the "stores" package (since we'd want all
+package to be written in a similar manner) we might need to look at some of the
+code from "stores" in order to properly structure this next Phase.
 
-The original plan was to have each package be unaware of it's predecessor, as we're building independent services, as per ADL 0004. While that sill holds true, we want all services source code to be cohesive between each other since this an interconnected project. And that is going to become increasingly difficult without knowing at least the order which files where written. Some packages may reference data structures that haven't been implemented yet. I'm mentioning this because the "stores/internal/postgres" package, for instance, was written after the "stores/internal/domain" package. So the postgres package requires the domain package. Additionaly the application
-package is responsible to bridging all communication between packages as well as gating any external connections. All comunication
-with the Repository needed to be done exclusively via the application layer.
+The original plan was to have each package be unaware of it's predecessor, as
+we're building independent services, as per ADL 0004. While that sill holds
+true, we want all services source code to be cohesive between each other since
+this an interconnected project. And that is going to become increasingly
+difficult without knowing at least the order which files where written. Some
+packages may reference data structures that haven't been implemented yet. I'm
+mentioning this because the "stores/internal/postgres" package, for instance,
+was written after the "stores/internal/domain" package. So the postgres package
+requires the domain package. Additionaly the application package is responsible
+to bridging all communication between packages as well as gating any external
+connections. All comunication with the Repository needed to be done exclusively
+via the application layer.
 
-Even though not everything written in stores may apply identically to for "baskets" or "depot", having an idea how the code for "stores" was written will be helpful in guiding the decisions we're about to make for while writing them.
+Even though not everything written in stores may apply identically to for
+"baskets" or "depot", having an idea how the code for "stores" was written will
+be helpful in guiding the decisions we're about to make for while writing them.
 
-In that spirit let me give you some context on some the code in "stores" and then we decide on the proper planning for this Phase and from which package to start coding the "basket" and "depot" services. I'm leaning twards building the "domain" package first, since that was the package we started in "stores".
+In that spirit let me give you some context on some the code in "stores" and
+then we decide on the proper planning for this Phase and from which package to
+start coding the "basket" and "depot" services. I'm leaning twards building the
+"domain" package first, since that was the package we started in "stores".
 
-In that sense, I'll start by presenting the code for "/internal" directory of "stores" package and focus on the "Store" aggregate. The "Product" aggregate is structured in an identical fashion. I won't present code for the connectapi package for now, but I may add it in a later Step if needed.
+In that sense, I'll start by presenting the code for "/internal" directory of
+"stores" package and focus on the "Store" aggregate. The "Product" aggregate is
+structured in an identical fashion. I won't present code for the connectapi
+package for now, but I may add it in a later Step if needed.
 
 ```bash
 da-storefront/stores [ master][!?][ v1.26.0]with 🐃 v1.72.0
@@ -867,10 +904,12 @@ func executorFrom(ctx context.Context, db Executor) Executor {
 }
 ```
 
-Finally some of the code for the "application" package. This package is the for making the orquestration/communication
-between all the other package. It's the application layer that makes communication between any external request
-and the repository. These concrete types -- CreateStore, EnableStoreParticipation, etc -- are
-initiliazed in the module.go file an then connnected to the Connect RPC Server
+Finally some of the code for the "application" package. This package is the for
+making the orquestration/communication between all the other package. It's the
+application layer that makes communication between any external request and the
+repository. These concrete types -- CreateStore, EnableStoreParticipation, etc
+-- are initiliazed in the module.go file an then connnected to the Connect RPC
+Server
 
 ```go
 

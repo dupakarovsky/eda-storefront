@@ -148,6 +148,6 @@ nats/baskets:
 .PHONY: format
 # formats markdown file to keep it withint 80 characters long
 format:
-	mdformat --wrap=80 ./**/README.md
+	mdformat --wrap=80 ./**/*.md
 
 

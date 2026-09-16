@@ -20,7 +20,7 @@ mount onto it with no second port or proxy hop.
 This is the first project since `foundation` was split out (ADL 0005) to build
 on top of it rather than build it.
 
-______________________________________________________________________
+---
 
 ## Concepts We'll Cover
 
@@ -45,7 +45,7 @@ methods)
 shared `docker-compose.yml`/`Makefile`, and producing this project's
 `CONTRACT.md` as a real deliverable (ADL 0004)
 
-______________________________________________________________________
+---
 
 ## Folder Structure
 
@@ -78,7 +78,7 @@ ______________________________________________________________________
     └── 0001_init.sql
 ```
 
-______________________________________________________________________
+---
 
 ## Phase Plan
 
@@ -112,7 +112,7 @@ live containers.
 shapes (superseding the `system-state.md` placeholders), update
 `system-state.md`, and write the closing Phase summary.
 
-______________________________________________________________________
+---
 
 ## Phase 1 — Domain Model (COMPLETED)
 
@@ -183,7 +183,7 @@ repositories with `Reconstitute` rehydration and current-state upserts.
 Concurrency control strategy (row lock vs optimistic version column) still to be
 decided per aggregate based on write pattern.
 
-______________________________________________________________________
+---
 
 ## Phase 2 — Postgres Persistence (COMPLETED)
 
@@ -389,185 +389,165 @@ the API layer's scope is fully known.
 
 I'll append this to `journey_progress.md` now, alongside the finalized ADL 0007.
 
-## Phase 4 — ConnectRPC API (COMPLETED)
+## Phase 4 — ConnectRPC API (COMPLETE)
 
-**What was built:**
+**Status:** All 8 Steps complete and verified against live containers, including
+a live, scripted, end-to-end curl walkthrough covering the full
+`pending → active → completed` lifecycle and its dead ends.
 
-- `storespb/api.proto` — the full `StoresService` contract: eleven RPCs covering
-  every domain command from Phases 1–3 (`CreateStore`, `RebrandStore`,
-  `EnableStoreParticipation`, `DisableStoreParticipation`, `AddProduct`,
-  `RebrandProduct`, `IncreaseProductPrice`, `DecreaseProductPrice`,
-  `RemoveProduct`) plus the project's first two queries (`GetStore`,
-  `ListProducts`). One dedicated request/response message pair per RPC rather
-  than shared shapes, mirroring Phase 1's one-concrete-type-per-event
-  discipline.
-- `buf.yaml`/`buf.gen.yaml` — `buf` codegen wiring (`protoc-gen-go`,
-  `protoc-gen-connect-go`), producing `storespb/api.pb.go` and
-  `storespb/storespbconnect/api.connect.go`.
-- `internal/connectapi/server.go` — the `Server` type implementing
-  `storespbconnect.StoresServiceHandler` in full, each handler translating wire
-  messages to/from `application`-layer calls; `errors.go`'s `mapError`
-  translating domain sentinel errors (`ErrStoreNotFound`,
-  `ErrStoreIsAlreadyParticipating`, etc.) into the right Connect error codes
-  (`CodeNotFound`/`CodeInvalidArgument`/`CodeInternal`), confirmed reaching real
-  HTTP status codes (404/400) through the actual wire, not just asserted via
-  `errors.Is` in a unit test.
-- Five new `application`-layer use cases
-  (`RebrandStore`/`EnableStoreParticipation`/`DisableStoreParticipation`/
-  `AddProduct`/`RebrandProduct`/`IncreaseProductPrice`/
-  `DecreaseProductPrice`/`RemoveProduct` — eight total alongside Phase 3's
-  `CreateStore`) plus two read-only use cases (`GetStore`, `ListProducts`), the
-  latter deliberately kept in the `application` layer rather than letting
-  `connectapi.Server` call repositories directly (ADL 0008).
-- `internal/application/publish_event.go`'s `publishDomainEvent` extracted as a
-  shared helper once a second, third, and fourth use case needed the same
-  envelope→marshal→subject→publish-with-retry tail Phase 3 wrote once for
-  `CreateStore`.
-- `ProductRepository.Delete`/`ListByStoreID`, `StoreRepository`/
-  `ProductRepository.FindByID` split from their locking `FindByIDForUpdate`
-  counterparts (Step 6) — resolving the "row-locking wired but dormant" gap
-  Phase 2 had explicitly flagged and deferred.
-- `internal/postgres/txcontext.go`'s `ctxWithTx`/`executorFrom` pair, making
-  `WithLock` actually thread a real `pgx.Tx` through to every repository method
-  called inside its callback — the concrete fix for that same dormant-lock gap
-  (ADL 0010), proven not just by re-passing existing tests but by a dedicated
-  concurrency test measuring genuine blocked time under a held lock
-  (`TestStoreRepository_WithLock_SerializesConcurrentAccess`).
-- Server-generated UUIDs for every new aggregate (ADL 0009), decided before
-  writing `api.proto` and implemented in `connectapi.Server`'s
-  `CreateStore`/`AddProduct` handlers.
-- Twenty-plus tests across `internal/application/*_test.go` — one
-  success/rejection pair per command and query use case, following the same
-  real-infrastructure discipline established in Phase 3
-  (`newTestModule`/`uniqueID` shared test helpers, extracted once three files
-  needed the identical boot sequence).
-- `01-stores/Dockerfile` — two-stage build (`golang:1.25` → `alpine:3.20`), the
-  project's first containerized deployment path.
-- `docker-compose.yml` extended with a real `stores` service block
-  (network-internal Postgres/NATS addressing via `environment:` overrides
-  layered on `env_file`), plus healthchecks added to the `postgres` block;
-  `nats` deliberately left without one after confirming `nats:2.12`'s official
-  image has no shell or utilities capable of running one — the startup-ordering
-  gap that would have covered is instead closed via `foundation/nats`'s new
-  `RetryOnFailedConnect(true)` option, a genuine improvement to `foundation`
-  itself.
-- `foundation/logging.New` updated to support an empty `logFilePath`
-  (console-only output), driven by a new `LOG_FILE_PATH` config value — closing
-  the "container's log file vanishes on rebuild" gap identified while writing
-  the Dockerfile, rather than carrying it forward silently.
-- `Makefile` reorganized into deployment-vs-development sections, plus a new
-  `build` target.
-- Four new ADL entries (0008–0010, plus an addendum to 0007) capturing the
-  query-layering decision, server-side ID generation, the transaction- locking
-  pattern choice (and the `TxManager` alternative considered and set aside), and
-  the request-timeout/retry-budget reconciliation.
+### What Was Built
 
-**Issues found and how they were diagnosed:**
+**Step 1 — `ShoppingList` domain aggregate.** A deliberate redesign, not a port:
+the book's `OrderID`/`AssignedBotID`/`Assign()`/`Stops`-for-routing shape was
+reworked from first principles once we established `ordering` doesn't exist yet
+(ADL 0004) and the `Bot` domain isn't being built at all. Landed on a flat
+`pending → active → completed`/`canceled` lifecycle
+(`Create → Initiate → Complete/Cancel`, matching `journey_progress.md`'s
+original Phase 4 line), with `Stops` kept as a real, store-grouped structure — a
+deliberate point of differentiation from `Basket`, per your call that a shopping
+list needs to read as a manifest, not a flat cart. `RemoveItem` takes both
+`storeID` and `productID` to avoid cross-store ambiguity on a
+coincidentally-shared product ID; `Complete()` rejects an empty `Stops` map,
+mirroring `Basket.Checkout()`.
 
-- The original `WithLock` implementation began a real `pgx.Tx` but never
-  threaded it into the calls made inside its own callback — every repository
-  method still ran against the bare pool regardless. This wasn't caught by any
-  of Steps 4–6's tests, since none of them were designed to distinguish "a lock
-  was held" from "no lock exists" — a single-threaded call sequence produces
-  identical final database state either way. Only a dedicated concurrency test,
-  measuring actual wall-clock blocked time on a second goroutine while the first
-  genuinely held the row, could prove the difference — and did, failing clearly
-  against the dormant version before the context-propagation fix.
-- An initial `Executor` interface addition (`BeginTx(ctx, pgx.TxOptions)`) would
-  have made `pgx.Tx` itself fail to satisfy `Executor`, since `pgx.Tx`'s real
-  interface only has `Begin` (for nested transactions/savepoints), not `BeginTx`
-  — that method only exists on `*pgxpool.Pool`/`*pgx.Conn`. Caught by inspection
-  before a build was attempted, once the interface was reviewed against what
-  `pgx.Tx` actually exposes, rather than surfacing as a confusing compile error
-  later.
-- `nats:2.12`'s official image has no shell, `wget`, `curl`, or `ls` — confirmed
-  by direct experimentation (`docker run --entrypoint sh` and `--entrypoint ls`
-  both failing with "executable file not found"), not assumed. This made a
-  `CMD-SHELL`-style Docker healthcheck structurally impossible against this
-  image, regardless of which command was tried inside it — resolved by moving
-  the readiness guarantee to the NATS client's own `RetryOnFailedConnect` option
-  instead of the container orchestration layer.
-- The global `SRV_REQUEST_TIMEOUT`/`SRV_WRITE_TIMEOUT` values (3s/10s) were
-  shorter than ADL 0007's measured ~10.5s worst-case retry budget — a real gap
-  invisible until an actual HTTP-layer request had a reason to exercise the full
-  retry path, which nothing had prior to this phase (Phase 3's own outage test
-  called `Execute` directly against an undeadlined `context.Background()`).
-  Resolved by raising both defaults in `foundation/config` past the measured
-  worst case (12s/13s), accepting read RPCs inheriting the same ceiling as a
-  documented, named trade-off (ADL 0007 addendum) rather than solving it with a
-  bespoke per-route timeout mid-phase.
+**Step 2 — Domain test suite.** 24 tests, full guard/emission coverage, plus two
+tests with no `Basket` equivalent:
+`TestShoppingList_AddItem_BlockedAfterInitiate` (proving the
+freeze-on-`Initiate` behavior) and
+`TestShoppingList_RemoveItem_SameProductDifferentStores` (proving the `storeID`
+disambiguation actually works, not just compiles).
 
-**Key concepts reinforced:**
+**Step 3 — `events` package.** Structurally identical to `baskets`', four files.
+`ItemAdded`/`ItemRemoved` payloads carry `StoreID` alongside `ProductID` — a
+direct consequence of `Stops` being store-keyed.
 
-- The difference between a data-correctness test and a concurrency- correctness
-  test — the former confirms an operation's final effect, the latter must
-  confirm something about _timing_ under real contention, since a broken lock
-  and a working lock can produce identical final state in a single-threaded
-  scenario.
-- Go's structural interface-to-interface assignability check (`pgx.Tx` failing
-  to satisfy an `Executor` that declared a method `pgx.Tx` doesn't have) as a
-  real, if narrow, category of compile error worth understanding rather than
-  discovering by trial and error.
-- `go mod tidy`'s single-module scope versus `go build`/`go run`/`go test`'s
-  workspace-aware scope — carried over from Phase 3's `go.work` discoveries,
-  revisited here as background context for why `01-stores/ go.mod`'s `replace`
-  directive (not `go.work`) is what makes the Dockerfile able to build without
-  any workspace file present in the image at all.
-- Container image minimalism as a real operational constraint, not just a
-  security nicety — `nats:2.12`'s missing shell forced a genuine architectural
-  choice (client-side retry vs. container-side healthcheck) rather than a
-  cosmetic one.
-- Protobuf JSON's default zero-value omission applying identically to scalar
-  fields (`participating: false`, first seen in Phase 3/Step 3) and empty
-  repeated fields (`products: []` rendering as an absent key entirely) — the
-  same underlying behavior, confirmed at the wire level for the first time in
-  Step 8 after being designed for at the Go level back in Step 6.
+**Step 4 — `catalog` package.** Same narrow per-event `Repository` shape
+`baskets` arrived at only after a mid-Phase-3 redesign (Issue #2 there) —
+`depot` gets it from the start. One real addition: `FindStoreByID`, which
+`baskets`' catalog never needed, required by `AddItem`'s two-lookup design.
 
-**Deviations from the original Phase 4 plan, and why:**
+**Step 5 — `postgres` package.** Two migration pairs
+(`shopping_lists`/`shopping_list_stops`/`shopping_list_items`;
+`catalog_stores`/`catalog_products`, the latter with `last_applied_seq` built in
+from its first version rather than bolted on mid-Step the way `baskets`' was).
+`ShoppingListRepository.Save` deletes-and-reinserts two tables per save (items,
+then stops), one level deeper than `baskets`' single-table pattern.
+`initiated_at`/`completed_at` are set via a `CASE`/`COALESCE` pair keyed off
+which status is being persisted — the domain layer carries no timestamp fields
+at all, resolving the question raised (and deliberately deferred) earlier in the
+Phase.
 
-- The original plan (see this file's Phase Plan section) scoped Phase 4 as five
-  steps ending in "Wiring, Compose, and Verification" as Phase 5. In practice,
-  verifying the API layer surfaced two genuine, unplanned pieces of work — the
-  dormant-lock fix and the timeout/retry reconciliation — each substantial
-  enough to warrant its own Step (7 and part of 8) and ADL entry rather than
-  being folded silently into what was meant to be a wiring pass. Containerizing
-  `stores` (Step 9) was likewise not in the original five-step plan, added once
-  it became clear `system-state.md` marking `stores` "Live" needed to mean what
-  it already means for `foundation` — a real running container, not a process on
-  the developer's machine — before `02-depot-baskets` could honestly depend on
-  it.
-- `RemoveProduct` has no domain-level rejection case (`Product.Remove()` cannot
-  fail) — its test suite's "rejection" case is instead "called against an ID
-  that doesn't exist," the only real failure mode left once the domain method
-  itself can't reject.
-- The originally-considered `domain.TxManager` pattern (explicit tx-scoped
-  repositories passed as callback arguments) was fully prototyped — all seven
-  affected use cases rewritten, a `postgres.TxManager` implementation written —
-  before being set aside in favor of the context-scoped `Executor` approach,
-  specifically to avoid `TxManager.WithTx` forcing every callback to receive
-  both `StoreRepository` and `ProductRepository` regardless of which aggregate a
-  given use case actually concerns (ADL 0010). Worth remembering this was a
-  real, working alternative that was deliberately not chosen, not an approach
-  that was tried and failed.
+**Step 6 — `application` layer.** Seven use cases (one more than `baskets`' six,
+for the standalone `InitiateShoppingList` step). `AddItem` does two catalog
+lookups per call (store, then product) inside its `WithLock` transaction, versus
+`baskets.AddItem`'s one — the direct cost of `Stops` needing store data the
+aggregate itself never fetches. `module.go`'s Phase 2 placeholder
+(`-- TEMPORARY --` stream constants, `placeholderHandler`) was fully replaced
+with real wiring.
 
-**State at end of Phase 4:** `01-stores` exposes all eleven RPCs from
-`api.proto` through ConnectRPC, backed by real `application`-layer use cases for
-every command and query, verified three independent ways — direct `Execute`
-calls in Go tests, real HTTP requests against `go run` (Step 3/8), and real HTTP
-requests against the actual container `02-depot-baskets` will depend on (Step
-9). The transactional row-locking gap Phase 2 left open is closed and proven
-under real concurrency. `docker-compose.yml`/`Makefile` now produce a genuinely
-running `stores` container, matching every other service's deployment shape for
-the first time.
+**Step 7 — `connectapi`.** `depotpb/api.proto` (seven RPCs;
+`AddItem`/`RemoveItem` both carry `store_id` alongside the usual IDs).
+`toProtoShoppingList` converts the domain's `map[string]*Stop` into a
+wire-format `[]*Stop` slice, pulling `storeID` back out of the map key — the one
+piece of this Step with no `baskets` file to adapt from.
 
-**Carried into Phase 5 (`02-depot-baskets`):** `01-stores`'s `CONTRACT.md`
-(finalized alongside this entry) is what `depot`/`baskets` will actually consume
-— not this file, not `01-stores`' source tree, per ADL 0004. The
-`foundation/nats` `RetryOnFailedConnect` addition and `foundation/logging`'s
-empty-path console-only mode are both real `foundation` improvements every
-future service inherits automatically. The still-open items explicitly not
-resolved in this phase — per-procedure timeouts via a Connect interceptor, the
-transactional outbox deferred by ADL 0007, and the `TxManager` alternative noted
-in ADL 0010 as worth revisiting once a service needs a genuine cross-aggregate
-transaction — remain standing items for whichever future phase first has
-concrete pressure to resolve them, not closed questions.
+**Step 8 — Integration verification.** Full seven-use-case `application` suite
+(16 tests) run against real Postgres/NATS, including both `AddItem`
+catalog-failure modes and the full lifecycle chain. A live, scripted, end-to-end
+curl verification against real `stores` + `depot` together — multi-store `Stops`
+grouping, quantity increment/decrement, stop deletion on last-item removal, the
+`Initiate`-freeze guard, and five distinct negative cases.
+
+### Issues Found & Resolved
+
+1. **`depot.Module` didn't expose `CatalogRepo` as a public field**, unlike
+   `baskets.Module` — caught only because writing the application test suite
+   required seeding catalog data directly the same way your `baskets` tests do
+   (`mod.CatalogRepo.CreateProduct(...)`). Fixed by adding the field and
+   populating it in `New`, before any test could be written against it. A small
+   thing, but a reminder that a test suite can surface a structural gap a
+   compile-clean build never would.
+
+### Key Concepts Reinforced
+
+**A structural redesign done at the whiteboard stage, before any code exists, is
+cheaper than discovering the same gap mid-implementation.** `Stops`' final
+shape, `AddItem`'s two-lookup requirement, and the `OrderID` deferral were all
+settled in conversation before Step 1's first line was written — unlike
+`baskets`' `catalog.Repository` redesign (Phase 3 Issue #2), which happened
+after an initial shape was already built and had to be un-built. Same outcome,
+cheaper path to it.
+
+**Removing a mechanism (bots) can force a real re-derivation of a domain's
+purpose, not just a smaller version of the same thing.** `Stops` under
+bot-routing and `Stops` as a fulfillment manifest are structurally similar but
+conceptually different — the redesign conversation (what job does `depot`
+actually do, now that nothing physically routes anywhere) mattered as much as
+the resulting code.
+
+**Map iteration order is a real, visible consequence, not just a Go trivia
+fact.** The live script's own output demonstrated `Stops`' non-deterministic
+ordering directly — `toProtoShoppingList`'s map-to-slice conversion means no two
+`GetShoppingList` calls are guaranteed to return stops in the same order,
+confirmed empirically rather than left as a caveat in this document alone.
+
+**Validation order still determines which error surfaces, same lesson as
+`baskets`' Issue #5 — now proven twice, not once.** `AddItem`'s
+store-lookup-then-product-lookup ordering means a request that's wrong on both
+counts always reports the store failure, never the product failure. The live
+script's two separate negative cases (`store depot never cached` vs.
+`valid store, unknown product`) were written specifically to prove both branches
+independently, rather than trusting the ordering by inspection alone.
+
+### Deliberately Deferred, Carried Forward Rather Than Forgotten
+
+- **`OrderID` on `ShoppingList`/`CreateShoppingList`.** Deferred per ADL 0004's
+  no-stubbing rule — `ordering` (Project 3) doesn't exist yet. When it's built,
+  adding `OrderID` back is a breaking signature change to `CreateShoppingList`
+  (zero args → requires an order reference), not a quiet addition — every
+  existing test and the live curl script will need updating at that point, the
+  same class of ripple ADL 0007's addendum and ADL 0015 each caused elsewhere.
+  Whoever builds `ordering` should start here, not assume `depot`'s API is
+  already order-aware.
+- **No NATS-outage retry test for `depot`**, unlike `baskets`'
+  `TestStartBasket_Execute_SucceedsAfterNATSRestart`. Deliberate, discussed
+  choice — `depot`'s `publishWithRetry`/`publishDomainEvent` are structurally
+  identical code to `baskets`', so rerunning the same infrastructure-level proof
+  was judged unlikely to surface anything `depot`-specific. Worth revisiting
+  only if something about `depot`'s actual publish path is ever suspected to
+  differ.
+- **`ShoppingList`'s sequencing assumption relative to `ordering`** — we assumed
+  a completed shopping list is a precondition for order creation, not the
+  reverse. Reasonable given the roadmap's fan-in description, but unconfirmed
+  against any real `ordering` design yet; worth double-checking once Project 3
+  actually starts.
+
+### State at End of Phase 4
+
+- `depot` is fully live: `domain`, `events`, `catalog`, `postgres`,
+  `application`, `connectapi` all built, unit-tested (`domain`, 24 tests),
+  integration-tested against real Postgres/NATS (`application`, 16 tests), and
+  verified end-to-end via live HTTP/ConnectRPC calls against a running `stores`.
+- The catalog projector is real, consuming `stores`' full event set via the same
+  narrow per-event method pattern `baskets` uses.
+- Both `depot-baskets` services (`baskets`, `depot`) are now genuinely live and
+  independently verified — the project's original two-service scope is complete.
+
+### Carried Into Phase 5 (Integration & Close-Out)
+
+- Per the original Phase Plan in this file, Phase 5 is full `docker-compose`
+  verification with both services genuinely live together, `CONTRACT.md` for
+  `depot` (mirroring `stores_CONTRACT.md`/`baskets_CONTRACT.md`'s structure),
+  and a `system-state.md` update reflecting `depot` as fully live rather than
+  "Not started."
+- The three deferred items above (`OrderID`, the skipped NATS-restart test, the
+  `ordering`-sequencing assumption) should be restated in `depot`'s own
+  `CONTRACT.md` under an "Explicit non-goals" section, the same way
+  `baskets_CONTRACT.md` names its own known gaps — not just left in this
+  progress log alone.
+
+---
+
+Copy this into `journey_progress.md`, appended after Phase 3's summary. Once
+that's done, are you ready to move into Phase 5 — `CONTRACT.md` and
+`system-state.md` — or would you like to pause here first?
