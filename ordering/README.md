@@ -45,3 +45,52 @@ replace-on-save pattern), and `Save`/`FindByID`/`FindByIDForUpdate`/`WithLock`.
 
 **Step 5** — Postgres repository implementation (migration, `interface.go`,
 `txcontext.go`, `order_repository.go`). Phase 1 ends here.
+
+### Step 1 — `Item`, `OrderStatus`, and the `Order` struct
+
+Two files, matching `depot`'s convention of keeping the status enum in its own
+file (`depot-shopping_list_status.go`) separate from the aggregate struct
+itself:
+
+```go
+// ordering/internal/domain/order_status.go
+```
+
+```go
+// ordering/internal/domain/order.go
+```
+
+**What's happening here:**
+
+`OrderStatus` has three values, not `baskets`' or `depot`'s four — there's no
+`pending`/`open` stage. An `Order` is only ever created already-populated (it
+comes into existence from `BasketCheckedOut`, which already carries a full item
+list per ADL 0016), so there's no "empty, being built up one `AddItem` call at a
+time" phase the way a `Basket` or `ShoppingList` has. `created` is the initial
+status, not an editable-draft one.
+
+`Item` carries `StoreID` where `Basket`'s `Item` doesn't. `Basket` never needed
+it — it only cares about `product_id`/`quantity`, and `store_id` lives one layer
+down in the catalog cache purely for `AddItem`'s existence check. `Order`'s
+`Item` needs `StoreID` as a first-class field because `ordering` has to hand it
+forward to `depot.AddItem` per unit (per our "call it N times" decision) —
+`depot` groups items into per-store `Stops`, and `ordering` is the one supplying
+that grouping key.
+
+`Items` is a flat slice, not a map keyed by store the way `ShoppingList.Stops`
+is. That grouping is `depot`'s concern, not `ordering`'s — `Order` just needs to
+remember what was ordered; it never needs to iterate "all items at store X"
+itself. Introducing that structure here would be modeling `depot`'s internal
+shape inside a different aggregate for no benefit.
+
+`ShoppingListID` starts as an empty string and has no dedicated "unset" sentinel
+— it's populated later (Phase 4) once `depot.CreateShoppingList` returns one. I
+left it a plain field for now rather than deciding how it gets set (a plain
+assignment vs. something event-worthy) — that's next in Step 2.
+
+Nothing runs yet — there's no behavior on `Order`, and Step 3's test file is
+what will actually exercise these. For now, a quick `go build ./...` from the
+`ordering` module root (once the file's saved in `internal/domain/`) is enough
+to confirm both files compile and belong to the same package. Let me know how
+that goes, and whether the `StoreID`-on-`Item` reasoning makes sense before we
+move to Step 2's events and behavior methods.
