@@ -64,7 +64,7 @@ Phase 5. **Integration & close-out** — full `docker-compose` verification with
 confirm both caches pick it up independently), `CONTRACT.md` for each service,
 `system-state.md` update, `journey_progress.md` close-out.
 
-______________________________________________________________________
+---
 
 ## Phase 1 Summary — COMPLETE
 
@@ -491,26 +491,26 @@ repository for this read model."
 - ADL 0015 (idempotent publish via message ID) is adopted system-wide, applied
   to both `stores` and `baskets`.
 - **Known, deliberately deferred gaps, carried forward rather than forgotten:**
-  - The `last_applied_seq` guard has only been proven to compute the _correct_
-    result under normal operation (verified via the live script's price-math
-    check) — not proven to actually block a genuine redelivery-after-crash
-    duplicate, which would require a dedicated failure-injection test (killing
-    the projector mid-handler, after Postgres commits but before `msg.Ack()`),
-    the same "prove the failure mode, then prove the fix" discipline ADL
-    0010/0012 each used.
-  - The live end-to-end script's `sleep 2` between publishing a `stores` event
-    and expecting `baskets`' catalog to reflect it is a timing assumption, not a
-    guarantee — worked reliably in this environment, but isn't a deterministic
-    wait.
-  - `BasketCheckedOut`/`BasketStarted`/`BasketCanceled` carry empty payloads —
-    whether `ordering` (Phase 3 in the roadmap's numbering, but a different,
-    later project than this one) needs more than a bare basket ID from
-    `BasketCheckedOut` specifically is still unknown and worth revisiting once
-    that project's actual needs are concrete.
-  - The catalog projector's event-name matching (`"StoreCreated"`, etc., as
-    local string literals) has no compiler-enforced link to `stores`' own event
-    constants — a silent rename on `stores`' side would degrade silently (logged
-    warning, skipped projection) rather than fail loudly.
+    - The `last_applied_seq` guard has only been proven to compute the _correct_
+      result under normal operation (verified via the live script's price-math
+      check) — not proven to actually block a genuine redelivery-after-crash
+      duplicate, which would require a dedicated failure-injection test (killing
+      the projector mid-handler, after Postgres commits but before `msg.Ack()`),
+      the same "prove the failure mode, then prove the fix" discipline ADL
+      0010/0012 each used.
+    - The live end-to-end script's `sleep 2` between publishing a `stores` event
+      and expecting `baskets`' catalog to reflect it is a timing assumption, not a
+      guarantee — worked reliably in this environment, but isn't a deterministic
+      wait.
+    - `BasketCheckedOut`/`BasketStarted`/`BasketCanceled` carry empty payloads —
+      whether `ordering` (Phase 3 in the roadmap's numbering, but a different,
+      later project than this one) needs more than a bare basket ID from
+      `BasketCheckedOut` specifically is still unknown and worth revisiting once
+      that project's actual needs are concrete.
+    - The catalog projector's event-name matching (`"StoreCreated"`, etc., as
+      local string literals) has no compiler-enforced link to `stores`' own event
+      constants — a silent rename on `stores`' side would degrade silently (logged
+      warning, skipped projection) rather than fail loudly.
 
 ### Carried Into Phase 4 (`depot`)
 
@@ -528,3 +528,81 @@ repository for this read model."
   sequence-guard pattern — worth addressing once `depot`'s own equivalent (if it
   needs one) makes the second item concrete across two services instead of
   hypothetical for one.
+
+## Phase 5 Summary — COMPLETE
+
+**Status:** All 3 Steps complete. `depot-baskets` project closed.
+
+### What Was Built
+
+**Step 1 — Full-stack container verification.** No `docker-compose.yaml` changes
+were needed — `depot`'s service block had been present and correctly wired
+(`depends_on: stores`, bound to `8082`) since earlier in the project, ahead of
+when this Phase formally called for it. Verification consisted of re-running the
+Step 8 curl script against the full `docker compose up` stack (all three
+services, Postgres, NATS) rather than a bare `go run` instance, confirming the
+containerized code path — built binary, container-internal networking
+(`DB_HOST=postgres`, `NATS_URL=nats://nats:4222`) — behaves identically to what
+Phase 4 had already proven.
+
+**Step 2 — `depot_CONTRACT.md`.** Full contract mirroring
+`stores_CONTRACT.md`/`baskets_CONTRACT.md`'s structure: six published events,
+seven-method API surface, data ownership boundary, and an "Explicit non-goals"
+section carrying forward all three items Phase 4's summary flagged as deferred
+(`orderID`, the skipped NATS-restart test, the unverified `ordering`-sequencing
+assumption), plus the `Stops`-ordering non-determinism the live script itself
+demonstrated.
+
+**Step 3 — `system-state.md` update.** `depot`'s row flipped from "Not started"
+to "Live" with its real publish/consume lists; the `docker-compose.yml`
+infrastructure row's prose updated to describe three services verified together,
+not two.
+
+### Issues Found & Resolved
+
+None specific to this Phase — Step 1's verification came back clean against the
+containerized stack, and Steps 2–3 were documentation work matching an
+already-agreed structure.
+
+### State at End of Phase 5
+
+- `depot-baskets` (`baskets` + `depot`) is fully live, documented, and verified
+  — individually (unit + integration tests, both services), together in a
+  bare-`go run` curl walkthrough, and together in the full containerized
+  `docker compose up` stack.
+- `docs/system-state.md` accurately reflects three live services (`stores`,
+  `baskets`, `depot`) plus `foundation`, with `ordering`, `payments`,
+  `customers`, `storefront`, `search`, and `notifications` still "Not started,"
+  per the roadmap's Project 3–8 sequence.
+- `depot_CONTRACT.md` exists as the authoritative, versioned record of what
+  `depot` exposes — per ADL 0004, this (not `depot`'s source) is what Project 3
+  (`ordering`) will carry forward when it eventually depends on `depot`.
+
+### Possible Next Steps
+
+- **Project 3 — `ordering`.** Per the roadmap, this is the next project: the one
+  service with two upstream dependencies (`baskets`' `BasketCheckedOut`,
+  `depot`'s `ShoppingListCompleted`), and the first point where
+  `depot_CONTRACT.md`'s flagged `orderID` gap becomes concrete rather than
+  hypothetical — expect `CreateShoppingList`'s signature to change as a breaking
+  edit, not an addition, per this Phase's own contract notes.
+- Revisiting `ShoppingListCompleted`'s empty payload (no item/stop breakdown) is
+  worth doing once `ordering`'s actual needs are known, the same open question
+  `baskets_CONTRACT.md` already carries for `BasketCheckedOut`.
+- The transactional outbox deferral from ADL 0007 remains a standing item across
+  all three live services now, not just `stores` — worth reconsidering with
+  three real publishers exercising the same known gap.
+
+**`depot-baskets` — project complete.**
+
+---
+
+Append this to `journey_progress.md` after Phase 4's summary; that closes the
+file out fully, per the same convention `completed-journey.md` demonstrates.
+
+That's `depot-baskets` done — two services, built, tested, contracted, and
+verified together, closing out Project 2 of the roadmap. Whenever you're ready
+to start `ordering` (Project 3), that'll be a fresh project folder per the
+roadmap's structure, carrying forward `foundation/` in full and
+`stores_CONTRACT.md`/`baskets_CONTRACT.md`/`depot_CONTRACT.md` — not their
+source — per ADL 0004. Let me know when you want to begin.

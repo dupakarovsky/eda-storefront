@@ -20,7 +20,7 @@ mount onto it with no second port or proxy hop.
 This is the first project since `foundation` was split out (ADL 0005) to build
 on top of it rather than build it.
 
----
+______________________________________________________________________
 
 ## Concepts We'll Cover
 
@@ -45,7 +45,7 @@ methods)
 shared `docker-compose.yml`/`Makefile`, and producing this project's
 `CONTRACT.md` as a real deliverable (ADL 0004)
 
----
+______________________________________________________________________
 
 ## Folder Structure
 
@@ -78,7 +78,7 @@ shared `docker-compose.yml`/`Makefile`, and producing this project's
     └── 0001_init.sql
 ```
 
----
+______________________________________________________________________
 
 ## Phase Plan
 
@@ -112,7 +112,7 @@ live containers.
 shapes (superseding the `system-state.md` placeholders), update
 `system-state.md`, and write the closing Phase summary.
 
----
+______________________________________________________________________
 
 ## Phase 1 — Domain Model (COMPLETED)
 
@@ -183,7 +183,7 @@ repositories with `Reconstitute` rehydration and current-state upserts.
 Concurrency control strategy (row lock vs optimistic version column) still to be
 decided per aggregate based on write pattern.
 
----
+______________________________________________________________________
 
 ## Phase 2 — Postgres Persistence (COMPLETED)
 
@@ -546,7 +546,7 @@ independently, rather than trusting the ordering by inspection alone.
   `baskets_CONTRACT.md` names its own known gaps — not just left in this
   progress log alone.
 
----
+______________________________________________________________________
 
 Copy this into `journey_progress.md`, appended after Phase 3's summary. Once
 that's done, are you ready to move into Phase 5 — `CONTRACT.md` and

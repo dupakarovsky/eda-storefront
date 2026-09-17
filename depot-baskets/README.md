@@ -2330,3 +2330,44 @@ Run `buf generate` (or your `protoc` equivalent) first, then place the four
 from the `depot` module. Let me know how the codegen and build go, and any
 questions on the `toProtoShoppingList` map-to-slice conversion or the
 map-ordering note before we move to Step 8 — integration verification.
+
+## Phase 5 Integration and close-out
+
+Before we write anything, here's the Step breakdown I'd propose for Phase 5,
+matching what the Phase 4 summary already flagged as carried forward:
+
+**Step 1 — `docker-compose.yml`: add `depot`'s service block.** `baskets`
+presumably already has its block from Phase 3; `depot` needs the equivalent
+(build context, environment overrides for Postgres/NATS service names, port
+mapping — `8083` per the curl script, or whichever port your compose file
+actually uses). Once added, bring the full stack up together (`stores`,
+`baskets`, `depot`, Postgres, NATS) via `docker compose up` and re-run — or a
+trimmed version of — the Step 8 curl script against the containerized `depot`,
+not just the bare `go run` instance you've been testing against. This is the one
+genuinely new verification this Phase adds: everything so far has proven `depot`
+works, not that it works _inside the same compose stack as its siblings_, which
+is what `system-state.md`'s "Live" status is supposed to mean per its own "How
+to update this file" section.
+
+**Step 2 — `depot_CONTRACT.md`.** Mirroring
+`stores_CONTRACT.md`/`baskets_CONTRACT.md`'s structure exactly: published events
+(six, subject `depot.shopping_list.*`), synchronous API surface (the seven
+RPCs), data ownership boundary, and — per the Phase 4 summary's own note — an
+"Explicit non-goals" section naming the three deferred items (`OrderID`, the
+skipped NATS-restart test, the `ordering`-sequencing assumption) explicitly, the
+same way `baskets_CONTRACT.md` names its own known gaps rather than leaving them
+only in `journey_progress.md`.
+
+**Step 3 — `system-state.md` update.** Flip `depot`'s row from "Not started" to
+"Live," fill in its real publish/consume lists (replacing the `system-state.md`
+row's current placeholder), update "Last Updated," and update the
+`docker-compose.yml` infrastructure row's prose to reflect three services now,
+not two.
+
+That's a smaller Phase than 1–4 — no new Go code, just the compose wiring plus
+the two documentation artifacts ADL 0004 and the roadmap's "no project ends
+without updating `system-state.md`" working agreement require. Does this
+breakdown match what you had in mind, or would you like to fold in anything else
+(e.g. closing out `depot-baskets`' own `journey_progress.md` with a final
+"project complete" line, since this is the last Phase for this particular
+two-service project per the original Phase Plan)?
