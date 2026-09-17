@@ -64,7 +64,7 @@ Phase 5. **Integration & close-out** — full `docker-compose` verification with
 confirm both caches pick it up independently), `CONTRACT.md` for each service,
 `system-state.md` update, `journey_progress.md` close-out.
 
----
+______________________________________________________________________
 
 ## Phase 1 Summary — COMPLETE
 
@@ -491,26 +491,26 @@ repository for this read model."
 - ADL 0015 (idempotent publish via message ID) is adopted system-wide, applied
   to both `stores` and `baskets`.
 - **Known, deliberately deferred gaps, carried forward rather than forgotten:**
-    - The `last_applied_seq` guard has only been proven to compute the _correct_
-      result under normal operation (verified via the live script's price-math
-      check) — not proven to actually block a genuine redelivery-after-crash
-      duplicate, which would require a dedicated failure-injection test (killing
-      the projector mid-handler, after Postgres commits but before `msg.Ack()`),
-      the same "prove the failure mode, then prove the fix" discipline ADL
-      0010/0012 each used.
-    - The live end-to-end script's `sleep 2` between publishing a `stores` event
-      and expecting `baskets`' catalog to reflect it is a timing assumption, not a
-      guarantee — worked reliably in this environment, but isn't a deterministic
-      wait.
-    - `BasketCheckedOut`/`BasketStarted`/`BasketCanceled` carry empty payloads —
-      whether `ordering` (Phase 3 in the roadmap's numbering, but a different,
-      later project than this one) needs more than a bare basket ID from
-      `BasketCheckedOut` specifically is still unknown and worth revisiting once
-      that project's actual needs are concrete.
-    - The catalog projector's event-name matching (`"StoreCreated"`, etc., as
-      local string literals) has no compiler-enforced link to `stores`' own event
-      constants — a silent rename on `stores`' side would degrade silently (logged
-      warning, skipped projection) rather than fail loudly.
+  - The `last_applied_seq` guard has only been proven to compute the _correct_
+    result under normal operation (verified via the live script's price-math
+    check) — not proven to actually block a genuine redelivery-after-crash
+    duplicate, which would require a dedicated failure-injection test (killing
+    the projector mid-handler, after Postgres commits but before `msg.Ack()`),
+    the same "prove the failure mode, then prove the fix" discipline ADL
+    0010/0012 each used.
+  - The live end-to-end script's `sleep 2` between publishing a `stores` event
+    and expecting `baskets`' catalog to reflect it is a timing assumption, not a
+    guarantee — worked reliably in this environment, but isn't a deterministic
+    wait.
+  - `BasketCheckedOut`/`BasketStarted`/`BasketCanceled` carry empty payloads —
+    whether `ordering` (Phase 3 in the roadmap's numbering, but a different,
+    later project than this one) needs more than a bare basket ID from
+    `BasketCheckedOut` specifically is still unknown and worth revisiting once
+    that project's actual needs are concrete.
+  - The catalog projector's event-name matching (`"StoreCreated"`, etc., as
+    local string literals) has no compiler-enforced link to `stores`' own event
+    constants — a silent rename on `stores`' side would degrade silently (logged
+    warning, skipped projection) rather than fail loudly.
 
 ### Carried Into Phase 4 (`depot`)
 
@@ -595,7 +595,7 @@ already-agreed structure.
 
 **`depot-baskets` — project complete.**
 
----
+______________________________________________________________________
 
 Append this to `journey_progress.md` after Phase 4's summary; that closes the
 file out fully, per the same convention `completed-journey.md` demonstrates.

@@ -2,8 +2,8 @@ go 1.25.0
 
 use (
 	./foundation
-	./foundation-smoketest
 	./stores
 	./depot-baskets/depot
 	./depot-baskets/baskets
+	./ordering
 )

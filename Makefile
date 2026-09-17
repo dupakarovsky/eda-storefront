@@ -19,14 +19,27 @@ down:
 build:
 	$(COMPOSE) build
 
+# logs of services
 logs:
 	$(COMPOSE) logs
 
 logs/stores:
 	$(COMPOSE) logs stores
 
+logs/baskets:
+	$(COMPOSE) logs baskets
+
+logs/depot:
+	$(COMPOSE) logs depot
+
 kill/stores:
 	$(COMPOSE) kill -s SIGTERM stores
+
+kill/baskets:
+	$(COMPOSE) kill -s SIGTERM baskets
+
+kill/depot:
+	$(COMPOSE) kill -s SIGTERM depot 
 
 ps:
 	$(COMPOSE) ps
