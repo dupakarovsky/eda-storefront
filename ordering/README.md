@@ -94,3 +94,50 @@ what will actually exercise these. For now, a quick `go build ./...` from the
 to confirm both files compile and belong to the same package. Let me know how
 that goes, and whether the `StoreID`-on-`Item` reasoning makes sense before we
 move to Step 2's events and behavior methods.
+
+### Step 2 — Domain events and aggregate behavior
+
+Three pieces: the `Event` interface + `eventBase` + concrete events (mirroring
+`baskets`/`depot`'s exact shape), then the behavior methods added onto
+`order.go`.
+
+```go
+// ordering/internal/domain/order_events.go
+```
+
+```go
+// ordering/internal/domain/order.go
+```
+
+**Decisions worth flagging:**
+
+**`LinkShoppingList` is a plain method returning only an `error`, not
+`(Event, error)`.** This settles the question from Step 1: recording the
+`shopping_list_id` is orchestration bookkeeping, not a customer-facing state
+change — nothing downstream needs to know "the order got linked to a shopping
+list" as its own event. It's guarded (blank ID, already-linked) the same way
+every other mutation in this codebase is guarded, but it doesn't participate in
+the event-publishing pipeline `NewOrder`/`MarkReadied`/`Cancel` do.
+
+**`Cancel` and `MarkReadied` share the same two guard errors**, mirroring
+`Basket.Cancel`'s pattern of naming the specific already-in-that-terminal-status
+case rather than a single generic "wrong status" error the way
+`Checkout`/`AddItem` do. Both of `Order`'s non-`created` statuses are terminal
+(there's no path back to `created`), so both methods only ever need to
+distinguish "already readied" from "already canceled" — there's no third,
+`ErrOrderNotCreated`-style case, since `created` is the only non-terminal status
+and it's the implicit success path for both methods.
+
+**`ErrOrderNotYetReady` is declared but unused right now** — I added it
+anticipating Phase 6's `CancelOrder` synchronous RPC might need to express "you
+can't ready this via some future manual-override path," but if it turns out
+unnecessary I'll remove it before Phase 1 closes. Flagging it now rather than
+silently leaving dead code.
+
+**`ReconstituteOrder` takes `shoppingListID` as a parameter**, unlike
+`ReconstituteBasket`/`ReconstituteShoppingList/`, which don't have an equivalent
+field to restore. This is the first aggregate in the system where reconstitution
+needs to rehydrate something beyond status and items.
+
+Ready for the test file whenever you are — let me know if the guard-error naming
+or the `LinkShoppingList` shape needs adjusting first.

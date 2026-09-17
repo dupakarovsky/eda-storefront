@@ -1,5 +1,18 @@
 package domain
 
+import (
+	"errors"
+	"time"
+)
+
+var (
+	ErrOrderAlreadyReadied       = errors.New("the order is already readied")
+	ErrOrderAlreadyCanceled      = errors.New("the order is already canceled")
+	ErrOrderNotYetReady          = errors.New("the order is not ready to be readied")
+	ErrShoppingListIDIsBlank     = errors.New("the shopping list id cannot be blank")
+	ErrShoppingListAlreadyLinked = errors.New("the order already has a linked shopping list")
+)
+
 // Item defines an entry in an order with it's associated
 // product ID, store ID and quanitty.Order's Item needs the
 // StoreID as it needs to forward it to depot.AddItem per unit.
@@ -19,4 +32,109 @@ type Order struct {
 	Status         OrderStatus
 	Items          []Item
 	ShoppingListID string
+}
+
+// NewOrder instantiates a new Order struct from the data it receives
+func NewOrder(id string, status OrderStatus, items []Item, shoppingListID string) (*Order, Event, error) {
+	// create a new Order intance
+	o := &Order{
+		ID:             id,
+		Status:         status,
+		Items:          items,
+		ShoppingListID: shoppingListID,
+	}
+
+	// emit the OrderCreated Event type
+	event := OrderCreated{
+		eventBase: eventBase{aggregateID: id, occurredAt: time.Now()},
+		Items:     items,
+	}
+	return o, event, nil
+}
+
+// LinkShoppingList will receive a shopping list id, check if the id has
+// already been associated with with order, storing it in the shoppingListID
+// field when its not
+func (o *Order) LinkShoppingList(shoppingListID string) error {
+
+	// guard against an blank shopping list id
+	if shoppingListID == "" {
+		return ErrShoppingListIDIsBlank
+	}
+
+	// the shoppingListID field for this order should be empty
+	// at this stage
+	if o.ShoppingListID != "" {
+		return ErrShoppingListAlreadyLinked
+	}
+
+	// passed the checks
+	// -----------------
+
+	// passed here it's ok to link
+	o.ShoppingListID = shoppingListID
+
+	return nil
+}
+
+// MarkReadied will update the Order's status from "created" to "readied"
+// after some checks.
+func (o *Order) MarkReadied() (Event, error) {
+
+	// error if the order is already in "readied" status
+	if o.Status == OrderReadiedStatus {
+		return nil, ErrOrderAlreadyReadied
+	}
+
+	// error if the order is in "canceled" status
+	if o.Status == OrderCanceledStatus {
+		return nil, ErrOrderAlreadyCanceled
+	}
+
+	// passed the checks
+	// ------------------
+
+	// updates the status
+	o.Status = OrderReadiedStatus
+
+	// emit an OrderReadied Event type
+	return OrderReadied{
+		eventBase: eventBase{aggregateID: o.ID, occurredAt: time.Now()},
+	}, nil
+}
+
+// Cancel will update the Order's status from "created" to "canceled"
+// after some checks.
+func (o *Order) Cancel() (Event, error) {
+
+	// error if order is readied (cannot be canceled anymore)
+	if o.Status == OrderReadiedStatus {
+		return nil, ErrOrderAlreadyReadied
+	}
+
+	// error if the order has already been canceled
+	if o.Status == OrderCanceledStatus {
+		return nil, ErrOrderAlreadyCanceled
+	}
+
+	// passed the checks; proceed to cancel
+	// ------------------------------------
+
+	// updates the status to canceled
+	o.Status = OrderCanceledStatus
+
+	// emit the OrderCanceled Event type
+	return OrderCanceled{
+		eventBase: eventBase{aggregateID: o.ID, occurredAt: time.Now()},
+	}, nil
+}
+
+// ReconstituteOrder will take data comming from the database and recreate the Order struct.
+func ReconstituteOrder(id string, status OrderStatus, items []Item, shoppingListID string) *Order {
+	return &Order{
+		ID:             id,
+		Status:         status,
+		Items:          items,
+		ShoppingListID: shoppingListID,
+	}
 }
