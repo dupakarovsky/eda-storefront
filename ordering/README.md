@@ -141,3 +141,81 @@ needs to rehydrate something beyond status and items.
 
 Ready for the test file whenever you are — let me know if the guard-error naming
 or the `LinkShoppingList` shape needs adjusting first.
+
+```go
+// ordering/internal/domain/order_test.go
+```
+
+A couple of things worth noting about this file relative to `basket_test.go`'s
+shape: **No blank-ID or "invalid item" guard tests**, unlike
+`TestBasket_AddItem`'s `"blank product id returns error"` case. `NewOrder`
+doesn't validate `items` at all right now — it accepts whatever slice it's
+given, including an empty one or one with blank `ProductID`s. That's arguably a
+gap: should `NewOrder` reject an order with zero items, the way
+`Basket.Checkout` and `ShoppingList.Complete` both guard against emptiness?
+Given `Order` is always constructed _from_ an already-checked-out (therefore
+non-empty) basket, an empty-items `Order` should never occur in practice — but
+"should never occur given how it's called" is a different guarantee than "the
+constructor enforces it," and every other aggregate in this system enforces its
+own invariants rather than trusting callers. Worth deciding before Step 3
+closes: add an `ErrOrderHasNoItems`-style guard now, or leave it as a
+trusted-caller assumption?
+
+**`TestOrder_MarkReadied`'s happy-path test links a shopping list first**, even
+though `MarkReadied` doesn't currently check `ShoppingListID` at all — I did
+that to model the realistic call sequence, not because the method enforces it.
+That raises the same kind of question as above: should `MarkReadied` guard
+against being called before a shopping list is linked (an
+`ErrShoppingListNotLinked`-style error), given that in the real flow it only
+ever fires in response to a `ShoppingListCompleted` event that presupposes
+linkage already happened? Right now nothing stops `order.MarkReadied()` from
+succeeding on a freshly-constructed, never-linked `Order`.
+
+Let me know your call on both before we move to Step 4. Good calls — both guards
+are cheap and close real gaps. Here are the changes:
+
+```go
+// ordering/internal/domain/order.go
+```
+
+```go
+// ordering/internal/domain/order.go — NewOrder guard
+```
+
+```go
+// ordering/internal/domain/order.go — MarkReadied guard order
+```
+
+Note the guard ordering in `MarkReadied`: status checks run _before_ the linkage
+check, not after. That's deliberate — if an order is already canceled, the
+caller should hear "already canceled," not "not linked," even though a canceled
+order was in fact never linked either. The status is the more fundamental fact
+about the order; linkage is a precondition for the one transition that's
+actually still available. This also means the existing
+`"already readied returns error"` and `"already canceled returns error"`
+subtests in `TestOrder_MarkReadied` don't need to change — they still hit their
+intended error even without calling `LinkShoppingList` first, since status is
+checked first.
+
+Now the test additions:
+
+```go
+// ordering/internal/domain/order_test.go — new subtest in TestNewOrder
+```
+
+```go
+// ordering/internal/domain/order_test.go — new subtest in TestOrder_MarkReadied
+```
+
+Both drop into their respective existing test functions (`TestNewOrder` gets the
+empty-items case alongside its one existing subtest; `TestOrder_MarkReadied`
+gets the not-linked case alongside its three existing ones). No other existing
+test needs to change — `newTestOrder` already constructs with one real item, so
+it's unaffected by the new `NewOrder` guard, and I confirmed above the
+`MarkReadied` guard reordering doesn't touch the
+already-readied/already-canceled subtests.
+
+Run `go test ./internal/domain/...` and let me know what comes back before we
+move to Step 4.
+
+### Step 4 — Postgres repository implementation

@@ -9,8 +9,10 @@ var (
 	ErrOrderAlreadyReadied       = errors.New("the order is already readied")
 	ErrOrderAlreadyCanceled      = errors.New("the order is already canceled")
 	ErrOrderNotYetReady          = errors.New("the order is not ready to be readied")
+	ErrOrderIsEmpty              = errors.New("the order has no items")
 	ErrShoppingListIDIsBlank     = errors.New("the shopping list id cannot be blank")
 	ErrShoppingListAlreadyLinked = errors.New("the order already has a linked shopping list")
+	ErrShoppingListNotLinked     = errors.New("the order has no linked shopping list")
 )
 
 // Item defines an entry in an order with it's associated
@@ -21,7 +23,7 @@ var (
 type Item struct {
 	ProductID string
 	StoreID   string
-	Quanity   int
+	Quantity  int
 }
 
 // Order defines an order made by customer in the system when an
@@ -35,13 +37,18 @@ type Order struct {
 }
 
 // NewOrder instantiates a new Order struct from the data it receives
-func NewOrder(id string, status OrderStatus, items []Item, shoppingListID string) (*Order, Event, error) {
-	// create a new Order intance
+func NewOrder(id string, items []Item) (*Order, Event, error) {
+
+	// guard agains an empty list of Items
+	if len(items) == 0 {
+		return nil, nil, ErrOrderIsEmpty
+	}
+
+	// create a new Order instance with Status OrderCreatedStatus
 	o := &Order{
-		ID:             id,
-		Status:         status,
-		Items:          items,
-		ShoppingListID: shoppingListID,
+		ID:     id,
+		Status: OrderCreatedStatus,
+		Items:  items,
 	}
 
 	// emit the OrderCreated Event type
@@ -91,8 +98,13 @@ func (o *Order) MarkReadied() (Event, error) {
 		return nil, ErrOrderAlreadyCanceled
 	}
 
+	// don't proceed without a linked ShoppingListID
+	if o.ShoppingListID == "" {
+		return nil, ErrShoppingListNotLinked
+	}
+
 	// passed the checks
-	// ------------------
+	// -----------------
 
 	// updates the status
 	o.Status = OrderReadiedStatus
