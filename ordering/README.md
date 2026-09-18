@@ -218,4 +218,69 @@ already-readied/already-canceled subtests.
 Run `go test ./internal/domain/...` and let me know what comes back before we
 move to Step 4.
 
-### Step 4 — Postgres repository implementation
+### Step 5 — Postgres repository implementation
+
+Four pieces: the migration, `interface.go` (the `Executor` abstraction),
+`txcontext.go` (ADL 0010's context-scoped resolution, ported as-is), and
+`order_repository.go` itself.
+
+**Migration:**
+
+```sql
+-- ordering/migrations/000001_create_orders_table.up.sql
+```
+
+```sql
+-- ordering/migrations/000001_create_orders_table.down.sql
+```
+
+`shopping_list_id` is `NOT NULL DEFAULT ''` rather than a nullable column —
+matches the domain's own "empty string means unlinked" convention (no separate
+`NULL`-vs-`""` state to reconcile between Go and SQL). `order_items`' primary
+key is `(order_id, product_id)`, same shape as `basket_items`, since an `Order`,
+like a `Basket`, never has two rows for the same product — quantity absorbs
+repeats.
+
+**`interface.go` and `txcontext.go`** — copied verbatim from `depot`'s versions,
+since ADL 0010 already settled this pattern and there's nothing service-specific
+in either file:
+
+```go
+// ordering/internal/postgres/interface.go
+```
+
+```go
+// ordering/internal/postgres/txcontext.go
+```
+
+**`order_repository.go`:**
+
+```go
+// ordering/internal/postgres/order_repository.go
+```
+
+Two things worth flagging:
+
+**`Save` still replaces all items on every call**, same delete-then-reinsert
+pattern `baskets`/`depot` use — even though, unlike `Basket`/`ShoppingList`,
+`Order.Items` never actually changes after `NewOrder` (there's no
+`AddItem`/`RemoveItem` equivalent; items are fixed at creation). This is
+slightly wasteful on every `Save` call after the first (re-deleting and
+re-inserting identical rows), but I kept it rather than special-case an
+insert-only path, since `Save` is called generically from every use case
+(`CreateOrder`, `LinkShoppingList`'s persistence, `MarkReadied`, `Cancel`) and
+none of them know or care whether items changed. If this turns out to matter for
+`Order`'s specific write volume later, it's a cheap optimization to add — not
+worth pre-optimizing for now.
+
+**No explicit index on `shopping_list_id`** even though Phase 5's
+`CompleteOrder` use case will need to look up an `Order` by it (that's how
+`ShoppingListCompleted` gets correlated back to the right `Order`) — `FindByID`
+above only looks up by primary key. That's a real gap for Phase 5, not Phase 1:
+I'd rather add `FindByShoppingListID` (and its supporting index) as part of Step
+5 of Phase 5 specifically, when we're building `CompleteOrder` and the need is
+concrete, rather than speculatively now.
+
+That closes Phase 1. Run `go build ./...` from the `ordering` module root to
+confirm everything compiles together, and let me know when you're ready to move
+to Phase 2 — the `baskets`/`depot` contract changes.

@@ -90,6 +90,18 @@ migrate/depot/down:
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/depotdb?sslmode=disable" \
 		down 1
 
+## ----------------------------------------------------------------------------
+
+## --- Ordering DB -- 
+migrate/ordering/up:
+	@migrate -path ordering/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/orderingdb?sslmode=disable" \
+		up
+
+migrate/ordering/down:
+	@migrate -path ordering/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/orderingdb?sslmode=disable" \
+		down 1
 
 ## ============================================================================
 ## FOR DEVELOPMENT ONLY
@@ -146,6 +158,11 @@ basketsdb/dev:
 # connect to the storesdb as the edb_dev user
 depotdb/dev:
 	psql -h 127.0.0.1 -p 5433 -d depotdb -U eda_dev
+
+.PHONY: orderingdb/dev
+# connect to the orderingdb as the edb_dev user
+orderingdb/dev:
+	psql -h 127.0.0.1 -p 5433 -d orderingdb -U eda_dev
 
 ## ----------------------------------------------------------------------------
 ## -- nats inspection ---
