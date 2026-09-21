@@ -93,10 +93,21 @@ func (BasketCanceled) EventName() string {
 
 // ----------------------------------------------------------------
 
+// ItemCheckedOut is an Item residing in the BasketCheckedOut Event
+// type.
+type ItemCheckedOut struct {
+	ProductID string
+	StoreID   string
+	Quantity  int
+}
+
+// ----------------------------------------------------------------
+
 // BasketCheckedOut is a concrete type that implement the Events interface
 // allowing it to be treated as an Event
 type BasketCheckedOut struct {
 	eventBase
+	Items []ItemCheckedOut
 }
 
 func (BasketCheckedOut) EventName() string {

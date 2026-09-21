@@ -24,9 +24,17 @@ type ItemRemovedPayload struct {
 	ProductID string `json:"product_id"`
 }
 
+type ItemCheckedOutPayload struct {
+	ProductID string `json:"product_id"`
+	StoreID   string `json:"store_id"`
+	Quantity  int    `json:"quantity"`
+}
+
 // BasketCheckedOutPayload is the concrete type to be converted to when
 // an Event BasketCheckedOut is to be published to the stream
-type BasketCheckedOutPayload struct{}
+type BasketCheckedOutPayload struct {
+	Items []ItemCheckedOutPayload `json:"items"`
+}
 
 // BasketCanceledPayload is the concrete type to be converted to when
 // an Event BasketCanceled is to be published to the stream
@@ -52,7 +60,17 @@ func toPayload(event domain.Event) (any, error) {
 		}, nil
 
 	case domain.BasketCheckedOut:
-		return BasketCheckedOutPayload{}, nil
+		var itemsPayload []ItemCheckedOutPayload
+		for _, item := range e.Items {
+			itemsPayload = append(itemsPayload, ItemCheckedOutPayload{
+				ProductID: item.ProductID,
+				StoreID:   item.StoreID,
+				Quantity:  item.Quantity,
+			})
+		}
+		return BasketCheckedOutPayload{
+			Items: itemsPayload,
+		}, nil
 
 	case domain.BasketCanceled:
 		return BasketCanceledPayload{}, nil

@@ -17,16 +17,33 @@ func TestCheckout_Execute_Succeeds(t *testing.T) {
 		t.Fatalf("failed to start basket: %v", err)
 	}
 
-	storeID := uniqueID("checkout-store")
-	productID := uniqueID("checkout-product")
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Bread", "sourdough loaf", "SKU-BREAD-1", 5.00); err != nil {
+	// ---------------------------------------------------------------------------
+	// -- Add 2 products to the database, one for each store ---
+	storeID1 := uniqueID("exp-checkout-store-1")
+	productID1 := uniqueID("exp-checkout-product-1")
+
+	storeID2 := uniqueID("exp-checkout-store-2")
+	productID2 := uniqueID("exp-checkout-product-2")
+
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID1, storeID1, "Bread", "sourdough loaf", "SKU-BREAD-1", 5.00); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID2, storeID2, "Milk", "whole milk", "SKU-MILK-1", 2.95); err != nil {
+		t.Fatalf("failed to seed catalog product: %v", err)
+	}
+	// ---------------------------------------------------------------------------
 
-	if _, err := mod.AddItemUC.Execute(ctx, basketID, productID); err != nil {
+	// add product 1 to the basket
+	if _, err := mod.AddItemUC.Execute(ctx, basketID, productID1); err != nil {
 		t.Fatalf("failed to add item: %v", err)
 	}
 
+	// add product 2 to the basket
+	if _, err := mod.AddItemUC.Execute(ctx, basketID, productID2); err != nil {
+		t.Fatalf("failed to add item: %v", err)
+	}
+
+	//
 	basket, err := mod.CheckoutUC.Execute(ctx, basketID)
 	if err != nil {
 		t.Fatalf("expected Execute to succeed, got error: %v", err)

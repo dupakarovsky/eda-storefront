@@ -134,8 +134,10 @@ func TestBasket_AddItem(t *testing.T) {
 		// adds in a product
 		_, _ = basket.AddItem("prod-1")
 
+		storeIDs := map[string]string{"prod-1": "store-1"}
+
 		// go to checkout
-		_, _ = basket.Checkout()
+		_, _ = basket.Checkout(storeIDs)
 
 		// tro to add an item to an basket in the "checkout" status;
 		// expect to fail
@@ -235,7 +237,11 @@ func TestBasket_RemoveItem(t *testing.T) {
 		basket := newTestBasket(t)
 		// addds a new item an goes to checkout
 		_, _ = basket.AddItem("prod-1")
-		_, _ = basket.Checkout()
+
+		// pass a map of storeIDs to checkout
+		storeIDs := map[string]string{"prod-1": "store-1"}
+
+		_, _ = basket.Checkout(storeIDs)
 
 		// try to remove an item from a basket in "chekcout" status; should fail
 		event, err := basket.RemoveItem("prod-1")
@@ -257,8 +263,10 @@ func TestBasket_Checkout(t *testing.T) {
 		// adds in an item
 		_, _ = basket.AddItem("prod-1")
 
+		storeIDs := map[string]string{"prod-1": "store-1"}
+
 		// set the status to "checkout
-		event, err := basket.Checkout()
+		event, err := basket.Checkout(storeIDs)
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
 		}
@@ -271,8 +279,13 @@ func TestBasket_Checkout(t *testing.T) {
 		if !ok {
 			t.Fatalf("expected BasketCheckedOut event, got %T", event)
 		}
+
 		if checkedOut.AggregateID() != basket.ID {
 			t.Errorf("expected aggregate id %s, got %s", basket.ID, checkedOut.AggregateID())
+		}
+
+		if len(checkedOut.Items) != 1 || checkedOut.Items[0].StoreID != "store-1" {
+			t.Errorf("expected 1 item with store-1, got %+v", checkedOut.Items)
 		}
 	})
 
@@ -280,28 +293,39 @@ func TestBasket_Checkout(t *testing.T) {
 		// new basket
 		basket := newTestBasket(t)
 
+		storeID := map[string]string{"prod-1": "store-1"}
+
 		// try to checkout on an emtpy basket; expected to fail
-		event, err := basket.Checkout()
+		event, err := basket.Checkout(storeID)
 		if !errors.Is(err, ErrBasketIsEmpty) {
 			t.Fatalf("expected ErrBasketIsEmpty, got %v", err)
 		}
+
 		if event != nil {
 			t.Errorf("expected nil event on error, got %+v", event)
 		}
+
 		if basket.Status != BasketOpenStatus {
 			t.Errorf("expected status to remain open, got %s", basket.Status)
 		}
 	})
 
 	t.Run("already checked out returns error", func(t *testing.T) {
-		basket := newTestBasket(t)
-		_, _ = basket.AddItem("prod-1")
-		_, _ = basket.Checkout()
 
-		event, err := basket.Checkout()
-		if !errors.Is(err, ErrBasketNotOpen) {
-			t.Fatalf("expected ErrBasketNotOpen, got %v", err)
+		basket := newTestBasket(t)
+		event, _ := basket.AddItem("prod-1")
+
+		storeIDs := map[string]string{"prod-1": "store-1"}
+
+		// checkout the basket; basket is checkedout
+		_, _ = basket.Checkout(storeIDs)
+
+		// try checking out again
+		event, err := basket.Checkout(storeIDs)
+		if !errors.Is(err, ErrBasketAlreadyCheckedOut) {
+			t.Fatalf("expected ErrBasketAlreadyCheckedOut, got %v", err)
 		}
+
 		if event != nil {
 			t.Errorf("expected nil event on error, got %+v", event)
 		}
@@ -310,12 +334,40 @@ func TestBasket_Checkout(t *testing.T) {
 	t.Run("canceled basket returns error", func(t *testing.T) {
 		basket := newTestBasket(t)
 		_, _ = basket.AddItem("prod-1")
+
+		// cancel the basket
 		_, _ = basket.Cancel()
 
-		event, err := basket.Checkout()
+		storeIDs := map[string]string{"prod-1": "store-1"}
+
+		// try checking out a canceled basket
+		event, err := basket.Checkout(storeIDs)
 		if !errors.Is(err, ErrBasketNotOpen) {
 			t.Fatalf("expected ErrBasketNotOpen, got %v", err)
 		}
+
+		if event != nil {
+			t.Errorf("expected nil event on error, got %+v", event)
+		}
+	})
+
+	t.Run("productID not in catalogue", func(t *testing.T) {
+		// new basket
+		basket := newTestBasket(t)
+
+		// add an item
+		_, _ = basket.AddItem("not-in-store-1")
+
+		// pass the map of products to checkout
+		storeIDs := map[string]string{"prod-from-store-1": "store-1"}
+
+		// try checking out a product not in the store
+		event, err := basket.Checkout(storeIDs)
+		if !errors.Is(err, ErrProductNotInCatalog) {
+			t.Fatalf("expected ErrProductNotInCatalog, got %v", err)
+		}
+
+		// expect the event not to be emited
 		if event != nil {
 			t.Errorf("expected nil event on error, got %+v", event)
 		}
@@ -345,15 +397,20 @@ func TestBasket_Cancel(t *testing.T) {
 	})
 
 	t.Run("already checked out returns error", func(t *testing.T) {
+
 		// new basket
 		basket := newTestBasket(t)
+
 		// adds in a product
 		_, _ = basket.AddItem("prod-1")
 
-		// checkout
-		_, _ = basket.Checkout()
+		// pass the map of products to checkout
+		storeIDs := map[string]string{"prod-1": "store-1"}
 
-		// try to cancel an already checkedout basket.
+		// checkout
+		_, _ = basket.Checkout(storeIDs)
+
+		// try to canceling an already checkedout basket.
 		event, err := basket.Cancel()
 		if !errors.Is(err, ErrBasketAlreadyCheckedOut) {
 			t.Fatalf("expected ErrBasketAlreadyCheckedOut, got %v", err)

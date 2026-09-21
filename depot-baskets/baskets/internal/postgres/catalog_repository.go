@@ -200,3 +200,43 @@ func (r *CatalogRepository) FindProductByID(ctx context.Context, id string) (*ca
 
 	return &product, nil
 }
+
+func (r *CatalogRepository) FindStoreIDsByProductIDs(ctx context.Context, productIDs []string) (map[string]string, error) {
+
+	query := `
+		SELECT id, store_id FROM catalog_products
+		WHERE id = ANY($1);
+	`
+	// retrieve the executor
+	exec := executorFrom(ctx, r.db)
+
+	// get the rows with results
+	rows, err := exec.Query(ctx, query, productIDs)
+	if err != nil {
+		return nil, fmt.Errorf("querying productID: %v", err)
+	}
+
+	storeIDs := make(map[string]string)
+
+	// begin iteration
+	for rows.Next() {
+
+		var productId string
+		var storedId string
+
+		// copy record into variables
+		if err := rows.Scan(&productId, &storedId); err != nil {
+			return nil, fmt.Errorf("iterating over ids: %v", err)
+		}
+
+		// record into the map
+		storeIDs[productId] = storedId
+	}
+
+	// check for iteration errors
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating item rows: %w", err)
+	}
+
+	return storeIDs, nil
+}

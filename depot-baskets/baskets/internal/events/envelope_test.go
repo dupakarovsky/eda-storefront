@@ -267,8 +267,8 @@ func TestEnvelope_Marshal_Unmarshal_BasketCheckedOut_Success(t *testing.T) {
 		t.Fatalf("add item error: %v", err)
 	}
 
-	// update the status to checkout
-	event, err := basket.Checkout()
+	// update the status to checkout by passing a
+	event, err := basket.Checkout(map[string]string{"prod-1": "store-1"})
 	if err != nil {
 		t.Fatalf("checkout error: %v", err)
 	}
@@ -279,27 +279,34 @@ func TestEnvelope_Marshal_Unmarshal_BasketCheckedOut_Success(t *testing.T) {
 		t.Errorf("expected BasketCheckedOut event got %T", event)
 	}
 
-	// evenlope the event
+	// envelope the event
 	envelope, err := events.NewEnvelope(event)
 	if err != nil {
 		t.Fatalf("unexpected new envelope failure: %v", err)
 	}
 
+	// t.Logf(">>> TestEnvelope_[envelope.Data]: %+v", string(envelope.Data))
+
+	// verify the envelope's AggregateID and EventName match the expected value
 	if envelope.AggregateID != "basket-1" || envelope.EventName != "BasketCheckedOut" {
 		t.Errorf(`expected AggregateID to be "basket-1" and EventName to be "BasketCheckedOut"; got: %s and %s`, envelope.AggregateID, envelope.EventName)
 	}
 
+	// marshal the envelope into JSON
 	payload, err := envelope.Marshal()
 	if err != nil {
 		t.Fatalf("unexpected marshalling error: %v", err)
 	}
 
+	// write the payload to a buffer
 	buf := new(bytes.Buffer)
 	_, err = buf.Write(payload)
 	if err != nil {
 		t.Fatalf("error writing json bytes to buffer: %v", err)
 	}
-	if !strings.Contains(buf.String(), `"data":{}`) {
+
+	// verify the buffer contains the JSON string for the Items
+	if !strings.Contains(buf.String(), `"data":{"items":[{"product_id":"prod-1","store_id":"store-1","quantity":1}]}`) {
 		t.Error(`expected data field to be an empty object "{}"; got false`)
 	}
 

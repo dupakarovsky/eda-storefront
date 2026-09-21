@@ -145,7 +145,7 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	startBasketUC := application.NewStartBasket(basketRepo, publisher, logger)
 	addItemUC := application.NewAddItem(basketRepo, catalogRepo, publisher, logger)
 	removeItemUC := application.NewRemoveItem(basketRepo, publisher, logger)
-	checkoutUC := application.NewCheckout(basketRepo, publisher, logger)
+	checkoutUC := application.NewCheckout(basketRepo, catalogRepo, publisher, logger)
 	cancelBasketUC := application.NewCancelBasket(basketRepo, publisher, logger)
 	getBasketUC := application.NewGetBasket(basketRepo)
 

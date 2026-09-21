@@ -24,6 +24,7 @@ type Repository interface {
 	RebrandProduct(ctx context.Context, id, name, description string) error
 	AdjustProductPrice(ctx context.Context, id string, delta float64, seq uint64) error
 	DeleteProduct(ctx context.Context, id string) error
+	FindStoreIDsByProductIDs(ctx context.Context, productIDs []string) (map[string]string, error)
 
 	FindProductByID(ctx context.Context, id string) (*Product, error)
 }

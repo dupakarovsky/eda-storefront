@@ -13,6 +13,8 @@ var (
 	ErrBasketAlreadyCheckedOut = errors.New("the basket is already checked out")
 	ErrBasketAlreadyCanceled   = errors.New("the basket is already canceled")
 	ErrBasketIsEmpty           = errors.New("the basket has no items")
+	// testing
+	ErrProductNotInCatalog = errors.New("the product is not in the catalogue")
 )
 
 // BasketStatus defines the possible status for a give Basket
@@ -92,8 +94,8 @@ func (b *Basket) AddItem(productID string) (Event, error) {
 
 		}
 	}
-	// passed here this product was not yet added
-	// ------------------------------------------
+	// passed here this product was not yet added to the basket
+	// --------------------------------------------------------
 
 	// create the Item to be added in,starting with 1
 	newItem := Item{
@@ -154,8 +156,16 @@ func (b *Basket) RemoveItem(productID string) (Event, error) {
 	return nil, ErrProductNotInBasket
 }
 
-// Checkout will shift the state of the Basket from "open" to "checkout"
-func (b *Basket) Checkout() (Event, error) {
+// Checkout will shift the state of the Basket from "open" to "checkout".
+// It receives a map of "productID:storeID" to match each product to it's
+// respective store.
+func (b *Basket) Checkout(storeIDs map[string]string) (Event, error) {
+
+	// check if this basket was already checked out previously.
+	// that means it's trying to Checkout again
+	if b.Status == BasketCheckedOutStatus {
+		return nil, ErrBasketAlreadyCheckedOut
+	}
 
 	// check if the current status is "open"
 	if b.Status != BasketOpenStatus {
@@ -173,13 +183,36 @@ func (b *Basket) Checkout() (Event, error) {
 	// basket has products
 	// -------------------
 
+	// construct a slice of ItemCheckedOut
+	var itemsCheckedOut []ItemCheckedOut
+
+	// verify if the product->store relation exists in the Items added
+	for _, item := range b.Items {
+
+		//can this productID be found in the map?
+		if storeID, ok := storeIDs[item.ProductID]; ok {
+			// if, so it's an ItemCheckedOut
+			itemsCheckedOut = append(itemsCheckedOut, ItemCheckedOut{
+				StoreID:   storeID,
+				ProductID: item.ProductID,
+				Quantity:  item.Quantity,
+			})
+			// if it's not found, then that product is not in the catalog table
+		} else {
+			return nil, ErrProductNotInCatalog
+		}
+	}
+
 	// update the status to "Checkout"
 	b.Status = BasketCheckedOutStatus
 
 	// emit the Event type
-	return BasketCheckedOut{
+	basketCheckedOut := BasketCheckedOut{
 		eventBase: eventBase{aggregateID: b.ID, occurredAt: time.Now()},
-	}, nil
+		Items:     itemsCheckedOut,
+	}
+
+	return basketCheckedOut, nil
 }
 
 // Cancel will cancel an existing Basket and chage it's status

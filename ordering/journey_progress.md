@@ -86,46 +86,118 @@ Chosen to minimize rewiring of already-live `depot`/`baskets` services. See ADL
 **`ShoppingListCompleted` needs no payload change.** Under Design A, `ordering`
 already knows the order's contents (it supplied them to `depot` in the first
 place) and only needs to know _which_ order is ready — already answered by the
-event's existing aggregate ID (`shopping_list_id`), which `ordering` will have
-stored on its own `Order` row.
+event's existing aggregate ID (`shopping_list_id`), which `ordering` stores on
+its own `Order` row.
 
 **`depot`'s `AddItem` stays untouched.** `ordering` calls `AddItem` once per
 unit rather than passing a `quantity`, avoiding a signature change to an
 already-live method.
 
-## Phase Plan
+## Phase 1 — Order Aggregate & Persistence (COMPLETE)
 
-**Phase 1 — Order Aggregate & Persistence.** Define `domain.Order` (status enum:
-`created` → `readied`/`canceled`, items with `product_id`/`store_id`/
-`quantity`, a `shopping_list_id` field to be filled in later), its domain
-events, and the Postgres repository — current-state rows per ADL 0002, with an
-explicitly-chosen concurrency strategy. Testable standalone, no NATS/HTTP yet.
+**Step 1 — `Item`, `OrderStatus`, `Order` struct.** `OrderStatus` has three
+values (`created`/`readied`/`canceled`), not four like `baskets`/`depot` — no
+`pending`/`open` stage, since an `Order` is always created already
+fully-populated from `BasketCheckedOut` rather than built up one `AddItem` call
+at a time. `Item` carries `StoreID`, unlike `Basket.Item`, since `ordering` must
+supply the store grouping key to `depot.AddItem` per unit (ADL 0016's "call it N
+times" decision). `Items` stays a flat slice, not a map keyed by store like
+`ShoppingList.Stops` — that grouping is `depot`'s concern, not `Order`'s.
 
-**Phase 2 — Contract Changes to `baskets` and `depot`.** Enrich
-`BasketCheckedOut`'s payload in `baskets` (touching the `Checkout` use case,
-since it needs each item's `store_id` from the catalog cache). Add `order_id` to
-`depot`'s `CreateShoppingList` (domain constructor, application use case, proto
-message, handler).
+**Step 2 — Domain events and aggregate behavior.** `OrderCreated`,
+`OrderReadied`, `OrderCanceled` events, same `eventBase`/`Event` interface shape
+as `baskets`/`depot`. Behavior methods: `NewOrder`, `LinkShoppingList`,
+`MarkReadied`, `Cancel`. Key decision: `LinkShoppingList` is a plain
+`error`-only method, not event-emitting — recording the `shopping_list_id` is
+orchestration bookkeeping, not a customer-facing state change.
+`ReconstituteOrder` is the first reconstitution function in the system that
+rehydrates something beyond status and items (the `shoppingListID` field).
 
-**Phase 3 — Consuming `BasketCheckedOut` → Creating the Order.** Wire up
-`ordering`'s first `Subscriber` (the `baskets` stream); the use case that
-projects the event into a new `Order` and publishes `OrderCreated`.
+**Step 3 — Domain test file.** `order_test.go`, mirroring `basket_test.go`'s
+`t.Run`-per-guard-condition structure. Surfaced two real gaps during review,
+both closed before the step was considered done:
 
-**Phase 4 — Orchestrating `depot`: `CreateShoppingList` + `AddItem`.** Build the
-`depotclient` wrapper; call it from the order-creation flow to create and
-populate the shopping list, storing the returned `shopping_list_id` on the
-`Order`. Decide failure-handling philosophy for a synchronous downstream
-command.
+- `NewOrder` now guards against an empty `items` slice (`ErrOrderIsEmpty`) —
+  previously trusted the caller (an already- checked-out, therefore non-empty,
+  basket) rather than enforcing its own invariant, inconsistent with every other
+  aggregate in the system.
+- `MarkReadied` now guards against being called before a shopping list is linked
+  (`ErrShoppingListNotLinked`) — the guard runs _after_ the
+  already-readied/already-canceled status checks, not before, so a
+  terminal-status order reports its actual status rather than a misleading "not
+  linked."
+- Adding the `MarkReadied` linkage guard meant `TestOrder_MarkReadied`'s and
+  `TestOrder_Cancel`'s `"already readied"` subtests needed an explicit
+  `LinkShoppingList` call before the first `MarkReadied()`, since reaching
+  "already readied" now requires a legitimate linked-then-readied sequence
+  rather than two bare `MarkReadied()` calls. Caught by the user running the
+  suite, not anticipated in advance — worth remembering that a new guard on one
+  method can silently invalidate an existing test's setup for a _different_
+  method's test, if that test happened to be relying on the now-guarded method
+  to reach its own state.
+- Full suite green after fixes (`go test -v ./ordering/internal/domain/`).
 
-**Phase 5 — Consuming `ShoppingListCompleted` → Order Readied.** Second
-`Subscriber` (the `depot` stream); look up the `Order` by `shopping_list_id`,
-transition it, publish `OrderReadied`.
+**Step 4 — `OrderRepository` interface + concurrency strategy.** Interface shape
+mechanical (matches `BasketRepository`/`ShoppingListRepository`). Real decision:
+row-level locking (`SELECT ... FOR UPDATE` via `WithLock`), same mechanism
+`baskets`/`depot` use — but for a different underlying reason. `Order` has no
+direct-user-action concurrent-write scenario the way `Basket`/`ShoppingList` do;
+its real concurrency source is JetStream redelivery (ADL 0013) — two
+near-simultaneous deliveries of the same consumed event landing on the same
+`Order` row. Optimistic version-column compare-and-swap was considered and
+rejected: it suits scenarios where a conflict should fail loudly for a client to
+retry (UI-facing), whereas here a "conflict" (duplicate delivery) should resolve
+silently and correctly via blocking, which a lock does more naturally.
 
-**Phase 6 — Synchronous API Surface.** `ordering`'s own ConnectRPC server:
-`GetOrder` (ADL 0008-compliant query path) and `CancelOrder` (deciding whether
-cancellation needs to reach into `depot` too).
+**Step 5 — Postgres repository implementation.** `orders` + `order_items` tables
+(migration), `interface.go`/`txcontext.go` ported verbatim from `depot` (ADL
+0010's pattern, nothing service-specific to change), `order_repository.go`
+(`Save`/`FindByID`/`FindByIDForUpdate`/ `WithLock`). `shopping_list_id` stored
+as `NOT NULL DEFAULT ''`, matching the domain's own empty-string-means-unlinked
+convention rather than introducing a separate `NULL` state. Two deliberate
+deferrals, not gaps:
 
-**Phase 7 — Containerization & Live Verification.** Dockerfile,
-`docker-compose.yaml`/`Makefile` wiring, migrations, and the same
-live-verification discipline (curl script, concurrency test,
-redelivery/idempotency tests) every prior service got.
+- `Save` still does full delete-then-reinsert of `order_items` on every call,
+  even though `Order.Items` never actually changes post-creation (no
+  `AddItem`/`RemoveItem` equivalent exists for `Order`) — kept generic rather
+  than special-cased, since `Save` is called uniformly by every use case and
+  none of them know whether items changed. Revisit only if this proves costly at
+  real write volume.
+- No `FindByShoppingListID` / no index on `shopping_list_id` yet, despite Phase
+  5's `CompleteOrder` needing exactly that lookup to correlate
+  `ShoppingListCompleted` back to an `Order`. Deliberately deferred to Phase 5
+  Step 5, when the need is concrete, rather than spec'd speculatively now.
+- Per this project's established precedent (confirmed with the user): repository
+  correctness is _not_ verified by a dedicated repository-test file — it gets
+  proven indirectly and for real once Phase 3's `CreateOrder` use case exercises
+  it against live Postgres, the same way `stores`/`baskets`/`depot`'s
+  repositories were verified.
+- `go build ./...` clean at Phase 1 close.
+
+## State at End of Phase 1
+
+- `domain` package complete and fully unit-tested (12 subtests across 4
+  top-level test functions, all green).
+- `postgres` package complete, compiles, **not yet exercised against a real
+  database** — that verification is expected to happen naturally in Phase 3, not
+  before.
+- No NATS, no HTTP, no `connectapi`, no `cmd/service/main.go`, no `ordering.go`
+  module wiring yet — all of that starts in later phases.
+- `depot`'s `AddItem` confirmed to need zero changes; the only two cross-service
+  contract edits remaining are `baskets`' `BasketCheckedOut` payload and
+  `depot`'s `CreateShoppingList` signature — both already named in their
+  respective `CONTRACT.md` non-goals sections before this project began.
+
+## What Carries Into Phase 2
+
+Phase 2 touches `baskets` and `depot` directly — this is the point where their
+actual source (proto, domain aggregate, application use case) gets edited, not
+just referenced. Two edits, and per our own scoping conversation, nothing else
+in either service should move:
+
+1. `baskets`' `Checkout` use case: enrich `BasketCheckedOut`'s payload with the
+   basket's items, each item's `store_id` resolved from `baskets`' own
+   `catalog_products` cache at checkout time (since `Basket.Item` itself carries
+   no store reference today).
+1. `depot`'s `CreateShoppingList`: add `order_id` — domain constructor,
+   application use case, proto message, connect handler.

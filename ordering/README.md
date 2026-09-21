@@ -284,3 +284,184 @@ concrete, rather than speculatively now.
 That closes Phase 1. Run `go build ./...` from the `ordering` module root to
 confirm everything compiles together, and let me know when you're ready to move
 to Phase 2 — the `baskets`/`depot` contract changes.
+
+---
+
+## Phase 2
+
+Here's how I'd like to break Phase 2 into steps:
+
+**Part A — `baskets`: enrich `BasketCheckedOut`**
+
+- **Step 1:** Design discussion — decide the enriched event's exact shape, and
+  where `store_id` resolution happens (domain vs. application layer). I have a
+  specific recommendation here that follows the same pattern `depot`'s `AddItem`
+  already uses, but it's worth walking through before touching code.
+- **Step 2:** Update `baskets`' domain layer — `Basket.Checkout()`'s signature
+  and the `BasketCheckedOut` event.
+- **Step 3:** Update `baskets`' application layer — `Checkout.Execute` resolves
+  each item's store via `catalogRepo` before calling into the domain.
+- **Step 4:** Update `baskets`' events package (`payload.go`) for the new wire
+  shape, and update `baskets-CONTRACT.md`.
+
+**Part B — `depot`: add `order_id` to `CreateShoppingList`**
+
+- **Step 5:** Update `depot`'s domain — `NewShoppingList` constructor and
+  `ShoppingList` struct gain an `OrderID`.
+- **Step 6:** Update `depot`'s application layer, proto (`api.proto` +
+  regenerated files), and connect handler for the new required field.
+- **Step 7:** Update `depot-CONTRACT.md`.
+
+Each step gets its own check-in as usual. Does this breakdown look right to you,
+or would you split/merge anything before we start on Step 1's design discussion?
+
+### Step 1 — Design: enriching `BasketCheckedOut`
+
+This resolves the "known limitation" already flagged in `baskets-CONTRACT.md`:
+`BasketCheckedOut` currently carries `{}`, no item list at all.
+
+#### Where does `store_id` resolution happen?
+
+`depot`'s `AddItem` already set the precedent here: the **application** layer
+resolves catalog data first (`catalogRepo.FindProductByID`), then hands the
+resolved data down into the domain method, which builds the fully-formed event.
+Domain stays ignorant of the catalog package entirely — same boundary as
+everywhere else in this system.
+
+So `Checkout` (application) needs a new dependency it doesn't have today:
+`catalogRepo catalog.Repository`, injected the same way `AddItem`'s `Checkout`
+struct already does it.
+
+#### How does the enriched data get into the domain?
+
+Two ways to shape this, worth deciding explicitly rather than defaulting:
+
+**Option A — application builds the full item list and hands it to `Checkout`.**
+
+```go
+func (b *Basket) Checkout(items []CheckedOutItem) (Event, error)
+```
+
+Application constructs `[]CheckedOutItem{ProductID, StoreID, Quantity}` itself,
+one per `basket.Items` entry. Domain still validates state (`Status == Open`,
+non-empty) using its own `b.Items`, but trusts the passed slice for the event
+payload. Risk: the passed slice and `b.Items` could theoretically drift out of
+sync (a bug elsewhere), and domain has no way to catch that.
+
+**Option B — application passes only a `productID → storeID` lookup map; domain
+still owns iteration.**
+
+```go
+func (b *Basket) Checkout(storeIDs map[string]string) (Event, error)
+```
+
+Domain still iterates its own `b.Items` (single source of truth for
+quantity/product list) and enriches each with `storeIDs[item.ProductID]`. No
+duplicate list to drift out of sync — domain owns exactly what it always owned,
+plus one extra piece of external data per product.
+
+I'd recommend **Option B** — it keeps `Basket.Items` as the one and only source
+of truth for "what's in this checkout," and the map is clearly just enrichment
+data, not a second copy of the basket's contents. It also raises a real question
+we should decide now: **what happens if a product ID in `b.Items` has no entry
+in the map?** Two choices:
+
+- Trust it — every `b.Items` entry was validated against the catalog at
+  `AddItem` time, so in practice this can't happen unless the product was later
+  removed from the catalog (`stores`' `RemoveProduct` → `ProductRemoved`
+  projected into `baskets`' local cache, deleting the row). If that happened
+  between add and checkout, `catalogRepo.FindProductByID` in the application
+  layer would already fail loudly there, before `Checkout()` is ever called
+  domain-side — so by the time the map reaches domain, it's guaranteed complete.
+- Defend anyway — domain returns a new sentinel error (e.g.
+  `ErrProductNotInCatalog`) if a lookup misses, even though the application
+  layer should never let that happen.
+
+Given the same "trust the caller has already validated" convention `AddItem`'s
+domain method already follows (it takes `store.ID, store.Name, store.Location`
+as trusted, pre-validated params), I'd lean toward **trusting it** — consistent
+with existing precedent, and the real failure mode (stale product) is already
+caught earlier, application-side, with a proper `CodeNotFound` response to the
+caller.
+
+#### New domain type and event shape
+
+```go
+type CheckedOutItem struct {
+    ProductID string
+    StoreID   string
+    Quantity  int
+}
+```
+
+```go
+type BasketCheckedOut struct {
+    eventBase
+    Items []CheckedOutItem
+}
+```
+
+And on the wire (`events/payload.go`):
+
+```go
+type CheckedOutItemPayload struct {
+    ProductID string `json:"product_id"`
+    StoreID   string `json:"store_id"`
+    Quantity  int    `json:"quantity"`
+}
+
+type BasketCheckedOutPayload struct {
+    Items []CheckedOutItemPayload `json:"items"`
+}
+```
+
+matching the `product_id`/`store_id`/`quantity` shape ADL 0016 specified.
+
+One more application-layer detail worth deciding now: the store lookup happens
+**inside** the existing `WithLock` transaction (same as `AddItem`'s product
+validation), so a mid-checkout catalog change can't produce an inconsistent
+result.
+
+---
+
+Does Option B (map-based enrichment, domain trusts the map's completeness) match
+how you'd want this shaped? If so, I'll ask for `basket_test.go` next so Step
+2's domain changes land consistent with existing test conventions.
+
+Good — this confirms `ApplicationTest` tests run against a real
+Postgres/`Module`, not a mock/fake `catalogRepo`, which simplifies things: no
+test double needs updating for the new interface method, since `mod.CatalogRepo`
+is the real `postgres.CatalogRepository` under the hood.
+
+One thing this test file surfaces that we still need to close out:
+**`baskets-module.go`'s wiring**. `CheckoutUC` is currently constructed as:
+
+```go
+checkoutUC := application.NewCheckout(basketRepo, publisher, logger)
+```
+
+With `NewCheckout`'s signature now requiring `catalogRepo`, this call site won't
+compile until it's updated — this is exactly the "don't break what's already
+working" case, so it needs to land in this same step, not deferred.
+
+```go
+// baskets/internal/baskets.go — update the CheckoutUC construction line
+checkoutUC := application.NewCheckout(basketRepo, catalogRepo, publisher, logger)
+```
+
+(`catalogRepo` is already in scope in `New()` — it's the same variable already
+passed into `NewAddItem` two lines above it.)
+
+With that wiring fix, the `checkout.go` I gave you last turn should compile
+cleanly against your `checkout_test.go` as-is:
+
+- `TestCheckout_Execute_Succeeds` seeds two products under two _different_
+  stores, adds both to the basket, checks out — exercises the multi-store case,
+  which is a good test of the map actually holding more than one entry
+  correctly.
+- `TestCheckout_Execute_RejectsEmptyBasket` confirms the empty-basket guard
+  still fires before the (now-added) catalog lookup step even matters.
+
+Go ahead and run both `go test -v .` in `baskets/internal/domain` (to reconfirm
+nothing regressed) and `go test -v .` in `baskets/internal/application` with the
+module.go fix applied, and let me know the results.
