@@ -15,7 +15,8 @@ func TestRemoveItem_Execute_Succeeds(t *testing.T) {
 
 	// create a new list
 	listID := uniqueID("remove-item-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("remove-item-order")
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 
@@ -54,7 +55,8 @@ func TestRemoveItem_Execute_RejectsStopNotFound(t *testing.T) {
 
 	// create a new list
 	listID := uniqueID("remove-item-no-stop-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("remove-item-no-stop-order")
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 
@@ -79,7 +81,8 @@ func TestRemoveItem_Execute_RejectsProductNotInStop(t *testing.T) {
 
 	// create a new list
 	listID := uniqueID("remove-item-wrong-product-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("remove-item-wrong-product-order")
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 

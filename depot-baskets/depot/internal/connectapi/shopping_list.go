@@ -15,7 +15,7 @@ func (s *Server) CreateShoppingList(ctx context.Context, req *connect.Request[de
 	uuid := uuid.NewString()
 
 	// call the use case to create a shopping list. creates domain.ShoppingList type
-	shoppingList, err := s.createShoppingListUC.Execute(ctx, uuid)
+	shoppingList, err := s.createShoppingListUC.Execute(ctx, uuid, req.Msg.OrderId)
 	if err != nil {
 		return nil, mapError(err)
 	}

@@ -15,7 +15,9 @@ func TestCancelShoppingList_Execute_SucceedsFromPending(t *testing.T) {
 
 	// create a new list
 	listID := uniqueID("cancel-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("cancel-order")
+
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 
@@ -38,7 +40,10 @@ func TestCancelShoppingList_Execute_RejectsAlreadyCompleted(t *testing.T) {
 
 	// crete a new list
 	listID := uniqueID("cancel-completed-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+
+	orderID := uniqueID("cancel-completed-order")
+
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 

@@ -53,8 +53,9 @@ func toProtoShoppingList(shoppingList *domain.ShoppingList) *depotpb.ShoppingLis
 
 	// construct a protobuf Shopping List
 	return &depotpb.ShoppingList{
-		Id:     shoppingList.ID,
-		Status: string(shoppingList.Status),
-		Stops:  pbStops,
+		Id:      shoppingList.ID,
+		OrderId: shoppingList.OrderID,
+		Status:  string(shoppingList.Status),
+		Stops:   pbStops,
 	}
 }

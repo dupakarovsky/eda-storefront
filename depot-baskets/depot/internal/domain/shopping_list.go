@@ -16,6 +16,7 @@ var (
 	ErrShoppingListIsEmpty          = errors.New("the shopping list has no items")
 	ErrShoppingListAlreadyCompleted = errors.New("the shopping list is already completed")
 	ErrShoppingListAlreadyCanceled  = errors.New("the shopping list is already canceled")
+	ErrOrderIDIsBlank               = errors.New("the order id cannot be blank")
 )
 
 // Item defines an Item from a Store
@@ -35,24 +36,31 @@ type Stop struct {
 // ShoppingList defines the type tha aggragates all the Stop needed
 // to collect Items from a different stores in a Shopping List
 type ShoppingList struct {
-	ID     string
-	Status ShoppingListStatus
-	Stops  map[string]*Stop
+	ID      string
+	OrderID string
+	Status  ShoppingListStatus
+	Stops   map[string]*Stop
 }
 
 // NewShoppingList will instantiate a new shopping list
-func NewShoppingList(id string) (*ShoppingList, Event, error) {
+func NewShoppingList(id, orderID string) (*ShoppingList, Event, error) {
+
+	if orderID == "" {
+		return nil, nil, ErrOrderIDIsBlank
+	}
 
 	// instantiate a new ShoppingList
 	shoppingList := &ShoppingList{
-		ID:     id,
-		Status: ShoppingListPendingStatus,
-		Stops:  make(map[string]*Stop), // iniialize the map of Stops
+		ID:      id,
+		OrderID: orderID,
+		Status:  ShoppingListPendingStatus,
+		Stops:   make(map[string]*Stop),
 	}
 
 	// emit the Event type
 	event := ShoppingListCreated{
 		eventBase: eventBase{aggregateID: id, occurredAt: time.Now()},
+		OrderID:   orderID,
 	}
 
 	return shoppingList, event, nil
@@ -239,10 +247,12 @@ func (sl *ShoppingList) Cancel() (Event, error) {
 }
 
 // ReconstituteShoppingList will convert data from the database into ShipponList struct
-func ReconstituteShoppingList(id string, status ShoppingListStatus, stops map[string]*Stop) *ShoppingList {
+// depot/internal/domain/shopping_list.go — replaces the existing ReconstituteShoppingList function
+func ReconstituteShoppingList(id, orderID string, status ShoppingListStatus, stops map[string]*Stop) *ShoppingList {
 	return &ShoppingList{
-		ID:     id,
-		Status: status,
-		Stops:  stops,
+		ID:      id,
+		OrderID: orderID,
+		Status:  status,
+		Stops:   stops,
 	}
 }

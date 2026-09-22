@@ -60,7 +60,7 @@ func toPayload(event domain.Event) (any, error) {
 		}, nil
 
 	case domain.BasketCheckedOut:
-		var itemsPayload []ItemCheckedOutPayload
+		itemsPayload := make([]ItemCheckedOutPayload, 0, len(e.Items))
 		for _, item := range e.Items {
 			itemsPayload = append(itemsPayload, ItemCheckedOutPayload{
 				ProductID: item.ProductID,

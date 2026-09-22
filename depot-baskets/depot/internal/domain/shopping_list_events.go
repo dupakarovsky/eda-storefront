@@ -39,6 +39,7 @@ func (e eventBase) OccurredAt() time.Time {
 // a new ShoppingList is created
 type ShoppingListCreated struct {
 	eventBase
+	OrderID string
 }
 
 func (ShoppingListCreated) EventName() string {

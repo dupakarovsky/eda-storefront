@@ -58,12 +58,30 @@ gap ADL 0007 already names for `stores`.
 
 - **Subject:** `baskets.basket.BasketCheckedOut`
 - **Published when:** `Checkout` succeeds
-- **Payload:** `{}`
-- **Known limitation:** carries no item list or total. A downstream consumer
-  needing the basket's contents at checkout time (e.g. `ordering`) cannot get
-  them from this event alone as currently defined — flagged during Phase 3
-  as a design decision to revisit once a real consumer's needs are known,
-  not yet resolved.
+- **Payload:**
+
+```json
+{
+    "items": [
+        {
+            "product_id": "string",
+            "store_id": "string",
+            "quantity": "integer"
+        }
+    ]
+}
+```
+
+- `store_id` is resolved from `baskets`' own `catalog_products` cache at
+  checkout time, inside the same transaction as the status change — not
+  supplied by the caller and not read from `stores` directly. If a basket
+  somehow reaches checkout carrying a product no longer present in that
+  cache (e.g. the product was removed from `stores` between add-time and
+  checkout), `Checkout` fails with `ErrProductNotInCatalog`
+  (`CodeInvalidArgument`) rather than publishing an incomplete event — this
+  should not happen in practice, since `AddItem` already validates product
+  existence at add-time, but the domain defends against it explicitly
+  rather than assuming.
 
 ### `BasketCanceled`
 

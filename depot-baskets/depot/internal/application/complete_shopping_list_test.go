@@ -13,18 +13,23 @@ func TestCompleteShoppingList_Execute_Succeeds(t *testing.T) {
 	mod := newTestModule(ApplicationTest, t)
 	ctx := t.Context()
 
-	// create a new list
+	// create a new listID and orderID
 	listID := uniqueID("complete-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("create-shopping-list-order")
+
+	// create the list
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 
 	// create a store and add a product to that store
 	storeID := uniqueID("complete-store")
 	productID := uniqueID("complete-product")
+
 	if err := mod.CatalogRepo.CreateStore(ctx, storeID, "Corner Grocer", "1 Main St"); err != nil {
 		t.Fatalf("failed to seed catalog store: %v", err)
 	}
+
 	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Oat Milk", "1 quart", "SKU-OAT-1", 3.25); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
@@ -56,9 +61,12 @@ func TestCompleteShoppingList_Execute_RejectsEmptyList(t *testing.T) {
 	mod := newTestModule(ApplicationTest, t)
 	ctx := t.Context()
 
+	// uniqu order id
+	orderID := uniqueID("create-shopping-list-order")
+
 	// create a new list
 	listID := uniqueID("complete-empty-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 	// change the status to "active". No items where added
@@ -83,9 +91,12 @@ func TestCompleteShoppingList_Execute_RejectsNotActive(t *testing.T) {
 	mod := newTestModule(ApplicationTest, t)
 	ctx := t.Context()
 
+	// unique order id
+	orderID := uniqueID("create-shopping-list-order")
+
 	// create a new list
 	listID := uniqueID("complete-not-active-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 

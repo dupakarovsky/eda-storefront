@@ -15,7 +15,9 @@ func TestGetShoppingList_Execute_Succeeds(t *testing.T) {
 
 	// crete a new list
 	listID := uniqueID("get-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("get-order")
+
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 

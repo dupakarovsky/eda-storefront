@@ -16,13 +16,15 @@ func TestInitiateShoppingList_Execute_Succeeds(t *testing.T) {
 
 	// create a new list
 	listID := uniqueID("initiate-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("initiate-order")
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 
 	// creat a store and a product for that store
 	storeID := uniqueID("initiate-store")
 	productID := uniqueID("initiate-product")
+
 	if err := mod.CatalogRepo.CreateStore(ctx, storeID, "Corner Grocer", "1 Main St"); err != nil {
 		t.Fatalf("failed to seed catalog store: %v", err)
 	}
@@ -53,7 +55,9 @@ func TestInitiateShoppingList_Execute_RejectsNotPending(t *testing.T) {
 
 	// create a new list
 	listID := uniqueID("initiate-twice-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("initiate-twice-order")
+
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 

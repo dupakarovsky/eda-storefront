@@ -45,9 +45,10 @@ docker compose -f "$REPO_ROOT/docker-compose.yaml" exec -T -e PGPASSWORD="$EDA_D
     psql -h 127.0.0.1 -U eda_dev -d depotdb -c "SELECT id, store_id, name FROM catalog_products WHERE id IN ('$PRODUCT_A1_ID','$PRODUCT_A2_ID','$PRODUCT_B1_ID');"
 
 echo "== [depot] CreateShoppingList =="
-CREATE_LIST_RESP=$(curl -s "${HEADERS[@]}" -d '{}' "$DEPOT_URL/CreateShoppingList")
+CREATE_LIST_RESP=$(curl -s "${HEADERS[@]}" -d '{"orderId":"order-verify-001"}' "$DEPOT_URL/CreateShoppingList")
 echo "$CREATE_LIST_RESP" | jq .
 LIST_ID=$(echo "$CREATE_LIST_RESP" | jq -r '.shoppingList.id')
+echo "$CREATE_LIST_RESP" | jq -e '.shoppingList.orderId == "order-verify-001"' >/dev/null && echo "orderId round-trip OK" || echo "orderId MISMATCH"
 
 echo "== [depot] AddItem (store A, product 1) =="
 curl -s "${HEADERS[@]}" -d "{\"shoppingListId\":\"$LIST_ID\",\"storeId\":\"$STORE_A_ID\",\"productId\":\"$PRODUCT_A1_ID\"}" "$DEPOT_URL/AddItem" | jq .

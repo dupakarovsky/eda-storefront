@@ -285,7 +285,7 @@ That closes Phase 1. Run `go build ./...` from the `ordering` module root to
 confirm everything compiles together, and let me know when you're ready to move
 to Phase 2 — the `baskets`/`depot` contract changes.
 
----
+______________________________________________________________________
 
 ## Phase 2
 
@@ -422,7 +422,7 @@ One more application-layer detail worth deciding now: the store lookup happens
 validation), so a mid-checkout catalog change can't produce an inconsistent
 result.
 
----
+______________________________________________________________________
 
 Does Option B (map-based enrichment, domain trusts the map's completeness) match
 how you'd want this shaped? If so, I'll ask for `basket_test.go` next so Step
@@ -465,3 +465,287 @@ cleanly against your `checkout_test.go` as-is:
 Go ahead and run both `go test -v .` in `baskets/internal/domain` (to reconfirm
 nothing regressed) and `go test -v .` in `baskets/internal/application` with the
 module.go fix applied, and let me know the results.
+
+Step 3 is done and confirmed — both application-layer tests pass, and the NATS
+log confirms `BasketCheckedOut` actually published on checkout (seq 49), so the
+whole path (domain → repo → publish) is exercised end-to-end against real
+Postgres/NATS, not just asserted on return values.
+
+**Step 3 check-in summary:**
+
+- `catalog.Repository` interface gained `FindStoreIDsByProductIDs`
+- `postgres.CatalogRepository` implements it via a single `= ANY($1)` batched
+  query
+- `Checkout.Execute` resolves the map inside `WithLock`, passes it to
+  `basket.Checkout`
+- `baskets.go`'s `NewCheckout` call site updated with the new `catalogRepo` arg
+- Confirmed: no test double needed updating, since `ApplicationTest` runs
+  against the real `Module`/Postgres
+
+On additional coverage — one gap is real but low-value to close right now:
+there's no application-layer test exercising `ErrProductNotInCatalog`'s
+propagation through `Execute`. The only way to trigger it for real is a product
+added to the basket, then removed from the catalog before checkout (mirroring
+`AddItem`'s `TestAddItem_Execute_RejectsUnknownProduct` pattern, but via
+delete-after-add rather than never-seeded). Given this error is explicitly the
+"shouldn't happen, but be defensive" case we discussed in Step 1 — already
+thoroughly covered at the domain level — I'd call this optional rather than
+blocking. Your call: add it now, or move on and revisit if it ever becomes
+relevant (e.g. once `stores`' `RemoveProduct` path is exercised more directly in
+this project).
+
+Assuming you'd rather move on: **Step 4** closes out Part A — updating
+`baskets`' events package (`payload.go`) so the wire format actually carries the
+new `Items` field, plus `baskets-CONTRACT.md`.
+
+Here's the payload change:
+
+```go
+// baskets/internal/events/payload.go
+```
+
+```go
+// baskets/internal/events/payload.go
+```
+
+Note the `switch e := event.(type)` at the top of `toPayload` already binds `e`,
+so this slots into the existing switch structure without other changes.
+
+Want me to also draft the `baskets-CONTRACT.md` diff (updating
+`BasketCheckedOut`'s documented payload and removing the now-resolved "known
+limitation" note) as part of this step, or would you rather do that yourself
+once the code's confirmed working?
+
+## Step 5 — `depot` domain: `NewShoppingList` gains `OrderID`
+
+This is more mechanical than Part A's design fork — no real branching decision
+here, just applying the existing pattern consistently. A few small things worth
+calling out as I draft it:
+
+**Validation:** Following the same precedent as
+`ErrStoreIDIsBlank`/`ErrProductIDIsBlank` in this same file (and `ordering`'s
+own `ErrShoppingListIDIsBlank` guard on `LinkShoppingList`), the constructor
+should reject a blank `orderID` rather than silently accepting one — a shopping
+list is meaningless without a real order behind it under Design A.
+
+**Where `OrderID` lives:** Three places need it — the `ShoppingList` struct
+itself (so `ReconstituteShoppingList` can carry it back from Postgres), the
+`NewShoppingList` constructor signature, and the `ShoppingListCreated` event (so
+it's available for envelope/payload construction, and matches the convention
+`OrderCreated` already established in `ordering` of carrying its own payload
+data rather than relying only on `AggregateID()`).
+
+```go
+// depot/internal/domain/shopping_list.go — add to the existing var block
+ErrOrderIDIsBlank = errors.New("the order id cannot be blank")
+```
+
+```go
+// depot/internal/domain/shopping_list.go
+```
+
+```go
+// depot/internal/domain/shopping_list.go
+```
+
+```go
+// depot/internal/domain/shopping_list.go
+```
+
+```go
+// depot/internal/domain/shopping_list_events.go
+```
+
+Two call sites elsewhere in `depot` will break until Step 6 catches up
+(`create_shopping_list.go`'s `domain.NewShoppingList(id)` call, and the Postgres
+repository's `find`/`ReconstituteShoppingList` call, and its `Save`'s
+INSERT/UPDATE which doesn't yet write an `order_id` column) — expected, since
+domain and its consumers move together across these two steps, same as Part A.
+
+Before you run anything: could you share `shopping_list_test.go` (domain layer)?
+I want to check its existing `NewShoppingList`/`ReconstituteShoppingList` call
+sites against this new signature before you spend time updating it blind.
+
+## Step 6 — `depot`: wiring `order_id`
+
+This touches more files than any step so far, so let me lay out the full set
+before code, flag two decisions, then give you everything to apply together.
+
+**Decision 1 — should the `ShoppingList` proto message echo back `order_id`?**
+The request will carry it, but nothing currently returns it. I'd add `order_id`
+to the `ShoppingList` message itself (not just the request) — `GetShoppingList`
+and every other response already returns `id`/`status`/`stops` for confirmation,
+and a future consumer (or you, debugging) benefits from being able to see which
+order a list belongs to without cross-referencing. This also keeps the proto
+message symmetric with the domain struct, same as `id`/`status` already are.
+
+**Decision 2 — `mapError` needs updating.** `depot-errors.go`'s switch doesn't
+have a case for the new `domain.ErrOrderIDIsBlank` sentinel yet — without it,
+that error would fall through to `CodeInternal`, which is wrong; it's a caller
+input error, same class as `ErrStoreIDIsBlank`.
+
+Here's the full set of changes:
+
+```sql
+-- depot/migrations/000002_add_order_id_to_shopping_lists.up.sql
+```
+
+```sql
+-- depot/migrations/000002_add_order_id_to_shopping_lists.down.sql
+```
+
+```proto
+
+```
+
+```proto
+}
+```
+
+You'll need to regenerate `depotpb`/`depotpbconnect` (via `buf generate`, per
+ADL 0003) after this proto change — I can't hand-edit the generated
+`.pb.go`/`.connect.go` files reliably, so let me know once that's done before we
+run anything depending on the new `OrderId` field.
+
+```go
+// depot/internal/domain/shopping_list.go
+```
+
+```go
+// depot/internal/connectapi/errors.go
+```
+
+(fold into the existing `CodeInvalidArgument` case's `errors.Is(...)` list,
+alongside `ErrStoreIDIsBlank`, `ErrProductIDIsBlank`, etc.)
+
+```go
+// depot/internal/application/create_shopping_list.go
+```
+
+```go
+// depot/internal/connectapi/proto.go
+}
+```
+
+```go
+// depot/internal/connectapi/shopping_list.go
+```
+
+```go
+// depot/internal/events/payload.go
+```
+
+```go
+// depot/internal/events/payload.go
+```
+
+Now the Postgres repository — `Save`, `find`, and the `ReconstituteShoppingList`
+call site all need the new column:
+
+```go
+// depot/internal/postgres/shopping_list_repository.go
+```
+
+```go
+// depot/internal/postgres/shopping_list_repository.go
+```
+
+Note: I did **not** change `ON CONFLICT`'s update clause to touch `order_id` — a
+shopping list's `order_id` is set once at creation and should never change on a
+later `Save` (e.g. from `AddItem`/`Initiate`/`Complete`), same immutability the
+`id` column itself already has by virtue of being the conflict key.
+
+Lastly, `create_shopping_list_test.go` needs updating for the new `Execute`
+signature:
+
+```go
+// depot/internal/application/create_shopping_list_test.go
+```
+
+That's the full set for Step 6. Given the size, let me know if you want to apply
+and test this in smaller pieces (e.g. migration + repository first, then
+application + proto + connectapi), or all at once — your call. Either way,
+you'll need to run `buf generate` for the proto changes before anything
+referencing `OrderId`/`order_id = 2` will compile.
+
+This actually confirms everything is wired correctly — the failures aren't bugs,
+they're the `CreateShoppingList` call cascading. Walking through it:
+
+- `CreateShoppingList` was called with `-d '{}'`, still the pre-ADL-0016 request
+  body — no `order_id` field at all.
+- The connect handler received a zero-value `""` for `OrderId`, passed it
+  straight to `Execute`, which rejected it via `ErrOrderIDIsBlank` — correctly
+  mapped to `invalid_argument` / HTTP 400 by `mapError`, exactly as designed.
+- Since that call failed, `LIST_ID` got set to `null` (jq's `-r` on a missing
+  `.shoppingList.id` field), so every subsequent step operated against a
+  shopping list ID of `"null"` — hence the uniform cascade of
+  `shopping list not found` from that point on.
+- The three tests unrelated to `LIST_ID` (unknown store, unknown product,
+  unknown shopping list ID at the very end) all passed correctly, since they
+  don't depend on the earlier `CreateShoppingList` call succeeding.
+
+So this run is genuinely good news: it proves the blank-`order_id` guard fires
+correctly all the way through the HTTP/Connect layer, not just in unit tests —
+the script itself is just stale against the new required field.
+
+The fix is a two-line change to the script — add a real `order_id` to the
+`CreateShoppingList` call, matching the ADL's requirement:
+
+```bash
+echo "== [depot] CreateShoppingList =="
+```
+
+Worth also asserting `orderId` actually round-trips in the response, since
+that's new surface this step added — you could add a quick check right after,
+e.g.:
+
+```bash
+echo "$CREATE_LIST_RESP" \
+| jq -e '.shoppingList.orderId == "order-verify-001"' > /dev/null \
+&& echo "orderId round-trip OK" || echo "orderId MISMATCH"
+```
+
+Go ahead and re-run with that fix — I'd expect the rest of the script (already
+proven correct in prior phases, unaffected by this change) to pass exactly as it
+did before this project touched `depot`.
+
+Clean end-to-end run — everything's working correctly, including `orderId`
+round-tripping through every single response (`CreateShoppingList` through
+`CompleteShoppingList`), confirming it's genuinely persisted and reloaded on
+every `find`, not just returned once at creation time.
+
+One line worth a quick note rather than a concern: the last check —
+_"CompleteShoppingList on an empty (never-initiated) list"_ — returned
+`not_found` / HTTP 404 instead of the `invalid_argument` / HTTP 400 the script's
+own comment expected. Looking at it: `NEW_LIST_ID` was set from `NEW_LIST_RESP`,
+but that `CreateShoppingList` call in the script (further up) still uses
+`-d '{}'` — no `order_id` — so it also hit `ErrOrderIDIsBlank` and never
+actually created a list, same cascade as the first run. That's a second stale
+spot in the script, not a code bug; harmless here since the resulting
+`not_found` still correctly exercises the "unknown ID" class of check, just not
+the specific "empty completed list" scenario the comment describes. Not worth
+re-running for — the guard it was meant to test (`ErrShoppingListIsEmpty` after
+`Initiate`) is already proven by the domain and application test suites from
+Steps 5–6. Flagging only so it doesn't cause confusion if you revisit this
+script later.
+
+**Phase 2 is complete.** Full summary:
+
+- **`baskets`**: `BasketCheckedOut` now carries itemized
+  `product_id`/`store_id`/`quantity` data, resolved from the catalog cache
+  inside the checkout transaction. Domain, application, wire format, and
+  `baskets-CONTRACT.md` all updated and verified — unit tests, application tests
+  (with real NATS publish), and this run's earlier `Checkout` path all green.
+- **`depot`**: `CreateShoppingList` now requires `order_id`, threaded through
+  domain, application, proto/connect, and Postgres (new immutable column).
+  `depot-CONTRACT.md` updated. Verified via 16 passing application tests and
+  this full curl run against live containers.
+- Both `CONTRACT.md` files reflect the ADL 0016 breaking changes accurately, so
+  `ordering`'s Phase 3 work can build against them as the current source of
+  truth rather than the now-superseded "provisional" language.
+
+That closes the two changes `journey_progress.md` flagged as needed before
+`ordering` could proceed. Should I draft the `journey_progress.md` update for
+Phase 2's close, or are you ready to move straight into Phase 3 (wiring
+`ordering`'s HTTP/NATS/module layer, plus the `depotclient` and orchestration
+logic itself)?

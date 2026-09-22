@@ -23,6 +23,7 @@ func mapError(err error) error {
 	// CodeInvalidArgument type error
 	case errors.Is(err, domain.ErrStoreIDIsBlank),
 		errors.Is(err, domain.ErrProductIDIsBlank),
+		errors.Is(err, domain.ErrOrderIDIsBlank),
 		errors.Is(err, domain.ErrStopNotFound),
 		errors.Is(err, domain.ErrProductNotInStop),
 		errors.Is(err, domain.ErrShoppingListNotPending),

@@ -7,7 +7,7 @@ import (
 func TestNewShoppingList(t *testing.T) {
 
 	// new list
-	sl, event, err := NewShoppingList("sl-1")
+	sl, event, err := NewShoppingList("sl-1", "order-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestNewShoppingList(t *testing.T) {
 
 func TestShoppingList_AddItem_BlankStoreID(t *testing.T) {
 	// new shopping list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add an item that is not blank
 	_, err := sl.AddItem("", "Store A", "1 Main St", "product-1")
@@ -43,7 +43,7 @@ func TestShoppingList_AddItem_BlankStoreID(t *testing.T) {
 
 func TestShoppingList_AddItem_BlankProductID(t *testing.T) {
 	// new shopping list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// try adding an blank item
 	_, err := sl.AddItem("store-1", "Store A", "1 Main St", "")
@@ -54,7 +54,7 @@ func TestShoppingList_AddItem_BlankProductID(t *testing.T) {
 
 func TestShoppingList_AddItem_NotPending(t *testing.T) {
 	// new shopping list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// manually update the the status to "active". now it should not be possible to add more
 	// items to the list
@@ -69,7 +69,7 @@ func TestShoppingList_AddItem_NotPending(t *testing.T) {
 
 func TestShoppingList_AddItem_NewStop(t *testing.T) {
 	// new list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add a new item
 	event, err := sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
@@ -102,7 +102,7 @@ func TestShoppingList_AddItem_NewStop(t *testing.T) {
 func TestShoppingList_AddItem_ExistingStopNewProduct(t *testing.T) {
 
 	// new list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add a new item to the list under "store-1"
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
@@ -123,7 +123,7 @@ func TestShoppingList_AddItem_ExistingStopNewProduct(t *testing.T) {
 func TestShoppingList_AddItem_RepeatProductIncrementsQuantity(t *testing.T) {
 
 	// new list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add a new item under "store-1"
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
@@ -154,7 +154,7 @@ func TestShoppingList_AddItem_RepeatProductIncrementsQuantity(t *testing.T) {
 
 func TestShoppingList_AddItem_SecondStore(t *testing.T) {
 	// new list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add "product-1" under "store-1"
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
@@ -175,7 +175,7 @@ func TestShoppingList_AddItem_SecondStore(t *testing.T) {
 
 func TestShoppingList_RemoveItem_NotPending(t *testing.T) {
 	// new list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add an Item to "store-1"
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
@@ -190,7 +190,7 @@ func TestShoppingList_RemoveItem_NotPending(t *testing.T) {
 
 func TestShoppingList_RemoveItem_StopNotFound(t *testing.T) {
 	// new list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// try removing an non-existing Item from the Stop "store-1"
 	_, err := sl.RemoveItem("store-1", "product-1")
@@ -201,7 +201,7 @@ func TestShoppingList_RemoveItem_StopNotFound(t *testing.T) {
 
 func TestShoppingList_RemoveItem_ProductNotInStop(t *testing.T) {
 	// new list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add "product-1" to Stop "store-1"
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
@@ -216,7 +216,7 @@ func TestShoppingList_RemoveItem_ProductNotInStop(t *testing.T) {
 func TestShoppingList_RemoveItem_Decrements(t *testing.T) {
 
 	// new list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add  "product-1" two times to "store-1"
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
@@ -244,7 +244,7 @@ func TestShoppingList_RemoveItem_Decrements(t *testing.T) {
 func TestShoppingList_RemoveItem_LastItemDeletesStop(t *testing.T) {
 
 	// new item
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add "product-1" to "store-1"
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
@@ -264,7 +264,7 @@ func TestShoppingList_RemoveItem_LastItemDeletesStop(t *testing.T) {
 
 func TestShoppingList_RemoveItem_SameProductDifferentStores(t *testing.T) {
 	// new list
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	// add "product-1" from "store-1" and "product-1" from "store-2"
 	// both stores have a product with the same code
@@ -290,7 +290,7 @@ func TestShoppingList_RemoveItem_SameProductDifferentStores(t *testing.T) {
 }
 
 func TestShoppingList_Initiate_NotPending(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 	sl.Status = ShoppingListActiveStatus
 
 	_, err := sl.Initiate()
@@ -300,7 +300,7 @@ func TestShoppingList_Initiate_NotPending(t *testing.T) {
 }
 
 func TestShoppingList_Initiate_Success(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
 
 	event, err := sl.Initiate()
@@ -316,7 +316,7 @@ func TestShoppingList_Initiate_Success(t *testing.T) {
 }
 
 func TestShoppingList_AddItem_BlockedAfterInitiate(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
 	sl.Initiate()
 
@@ -327,7 +327,7 @@ func TestShoppingList_AddItem_BlockedAfterInitiate(t *testing.T) {
 }
 
 func TestShoppingList_Complete_NotActive(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	_, err := sl.Complete()
 	if err != ErrShoppingListNotActive {
@@ -336,7 +336,7 @@ func TestShoppingList_Complete_NotActive(t *testing.T) {
 }
 
 func TestShoppingList_Complete_EmptyStops(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 	sl.Initiate()
 
 	_, err := sl.Complete()
@@ -346,7 +346,7 @@ func TestShoppingList_Complete_EmptyStops(t *testing.T) {
 }
 
 func TestShoppingList_Complete_Success(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
 	sl.Initiate()
 
@@ -363,7 +363,7 @@ func TestShoppingList_Complete_Success(t *testing.T) {
 }
 
 func TestShoppingList_Cancel_FromPending(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 
 	event, err := sl.Cancel()
 	if err != nil {
@@ -378,7 +378,7 @@ func TestShoppingList_Cancel_FromPending(t *testing.T) {
 }
 
 func TestShoppingList_Cancel_FromActive(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
 	sl.Initiate()
 
@@ -392,7 +392,7 @@ func TestShoppingList_Cancel_FromActive(t *testing.T) {
 }
 
 func TestShoppingList_Cancel_AlreadyCompleted(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 	sl.AddItem("store-1", "Store A", "1 Main St", "product-1")
 	sl.Initiate()
 	sl.Complete()
@@ -404,7 +404,7 @@ func TestShoppingList_Cancel_AlreadyCompleted(t *testing.T) {
 }
 
 func TestShoppingList_Cancel_AlreadyCanceled(t *testing.T) {
-	sl, _, _ := NewShoppingList("sl-1")
+	sl, _, _ := NewShoppingList("sl-1", "order-1")
 	sl.Cancel()
 
 	_, err := sl.Cancel()

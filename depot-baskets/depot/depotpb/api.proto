@@ -20,16 +20,20 @@ message Stop {
   repeated Item items = 4;
 }
 
+// depot/depotpb/api.proto — replaces the existing ShoppingList message
 message ShoppingList {
   string id = 1;
-  string status = 2;
-  repeated Stop stops = 3;
+  string order_id = 2;
+  string status = 3;
+  repeated Stop stops = 4;
 }
 
 // ==== Messages ============================================================
 
 // === CreateShoppingList ===
-message CreateShoppingListRequest {}
+message CreateShoppingListRequest {
+  string order_id = 1;
+}
 
 message CreateShoppingListResponse {
   ShoppingList shopping_list = 1;

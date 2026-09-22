@@ -32,10 +32,10 @@ func NewCreateShoppingList(
 
 // Execute will create a new domain shoppingList, persist it to the database and publish it's
 // event to the stream.
-func (uc *CreateShoppingList) Execute(ctx context.Context, id string) (*domain.ShoppingList, error) {
+func (uc *CreateShoppingList) Execute(ctx context.Context, id, orderID string) (*domain.ShoppingList, error) {
 
 	// create a new Shopping List
-	shoppingList, event, err := domain.NewShoppingList(id)
+	shoppingList, event, err := domain.NewShoppingList(id, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("constructing shopping list: %w", err)
 	}

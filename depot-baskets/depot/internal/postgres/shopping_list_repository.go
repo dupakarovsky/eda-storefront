@@ -61,10 +61,10 @@ func (r *ShoppingListRepository) Save(ctx context.Context, shoppingList *domain.
 	// update the 'initiated_at' and "completed_at" fields depending on the value of status
 	// using the COALESCE function to update with the non NULL value
 	upsertStmt := `
-	INSERT INTO shopping_lists (id, status, updated_at, initiated_at, completed_at)
-	VALUES ($1, $2, now(),
-		CASE WHEN $2 = 'active' THEN now() ELSE NULL END,
-		CASE WHEN $2 = 'completed' THEN now() ELSE NULL END)
+	INSERT INTO shopping_lists (id, order_id, status, updated_at, initiated_at, completed_at)
+	VALUES ($1, $2, $3, now(),
+		CASE WHEN $3 = 'active' THEN now() ELSE NULL END,
+		CASE WHEN $3 = 'completed' THEN now() ELSE NULL END)
 	ON CONFLICT (id) DO UPDATE SET
 		status = EXCLUDED.status,
 		updated_at = now(),
@@ -73,7 +73,7 @@ func (r *ShoppingListRepository) Save(ctx context.Context, shoppingList *domain.
 	`
 
 	// execute the command
-	if _, err := exec.Exec(ctx, upsertStmt, shoppingList.ID, string(shoppingList.Status)); err != nil {
+	if _, err := exec.Exec(ctx, upsertStmt, shoppingList.ID, shoppingList.OrderID, string(shoppingList.Status)); err != nil {
 		return fmt.Errorf("saving shopping list %q: %w", shoppingList.ID, err)
 	}
 
@@ -153,7 +153,7 @@ func (r *ShoppingListRepository) FindByIDForUpdate(ctx context.Context, id strin
 func (r *ShoppingListRepository) find(ctx context.Context, exec Executor, id string, forUpdate bool) (*domain.ShoppingList, error) {
 
 	selectStmt := `
-	SELECT id, status
+	SELECT id, order_id, status
 	FROM shopping_lists
 	WHERE id = $1
 	`
@@ -164,12 +164,13 @@ func (r *ShoppingListRepository) find(ctx context.Context, exec Executor, id str
 	}
 
 	var (
-		listID string
-		status string
+		listID  string
+		orderID string
+		status  string
 	)
 
 	// retrieve the shopping list data (id and status) from the shopping_list table
-	err := exec.QueryRow(ctx, selectStmt, id).Scan(&listID, &status)
+	err := exec.QueryRow(ctx, selectStmt, id).Scan(&listID, &orderID, &status)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -186,7 +187,7 @@ func (r *ShoppingListRepository) find(ctx context.Context, exec Executor, id str
 	}
 
 	// then reconstruct the domain.ShoppingList
-	return domain.ReconstituteShoppingList(listID, domain.ShoppingListStatus(status), stops), nil
+	return domain.ReconstituteShoppingList(listID, orderID, domain.ShoppingListStatus(status), stops), nil
 }
 
 // loadStops will create a map of Stops keyed by a store id, which is the Stops data strucure

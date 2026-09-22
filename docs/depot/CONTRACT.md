@@ -28,7 +28,11 @@ same known, currently unresolved gap ADL 0007 already names for `stores` and
 
 - **Subject:** `depot.shopping_list.ShoppingListCreated`
 - **Published when:** a new shopping list is created via `CreateShoppingList`
-- **Payload:** `{}`
+- **Payload:**
+
+```json
+{ "order_id": "string" }
+```
 
 ### `ItemAdded`
 
@@ -96,7 +100,7 @@ list IDs are server-generated (UUID) on creation, never client-supplied
 
 | Method                 | Request → Response                                        | Notes                                                                                                                                                             |
 | ---------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CreateShoppingList`   | `{}` → `{shoppingList}`                                   | shopping list id is server-generated; no input fields at all                                                                                                      |
+| `CreateShoppingList`   | `{order_id}` → `{shoppingList}`                           | shopping list id is server-generated; `order_id` is required                                                                                                      |
 | `AddItem`              | `{shoppingListId, storeId, productId}` → `{shoppingList}` | validates both `storeId` and `productId` exist in the local catalog cache before mutating; only legal while `status` is `pending`                                 |
 | `RemoveItem`           | `{shoppingListId, storeId, productId}` → `{shoppingList}` | decrements quantity, or removes the item entirely once quantity reaches zero; deletes the stop entirely once its last item is removed; only legal while `pending` |
 | `InitiateShoppingList` | `{shoppingListId}` → `{shoppingList}`                     | moves `pending` → `active`; freezes `AddItem`/`RemoveItem` from this point forward                                                                                |
@@ -127,17 +131,12 @@ that data.
 
 ## Explicit non-goals of this contract
 
-- **No `orderID` on `ShoppingList` or `CreateShoppingList`.** The book's
-  version of this aggregate is created from an `Order`; this service's
-  version deliberately omits that reference, since `ordering` (roadmap
-  Project 3) does not exist yet and ADL 0004 prohibits referencing an ID
-  owned by a service with no live instance to have produced it. When
-  `ordering` is built, this is expected to become a **breaking** change to
-  `CreateShoppingList`'s signature (zero args today → an order reference
-  required), not an additive one — every existing test and the live curl
-  script in this project will need updating at that point. Whoever builds
-  `ordering` should treat this contract's `CreateShoppingList` entry as
-  provisional, not stable, until that retrofit happens.
+- **`CreateShoppingList` now requires `order_id` (ADL 0016).** This was a
+  breaking change to an already-live method, applied when `ordering`
+  (Project 3) became the first real caller — existing rows created before
+  this change carry `order_id = ''` (the column's `DEFAULT ''`), not a
+  real order reference. `order_id` is immutable once set: `Save` never
+  updates it on subsequent calls for the same shopping list.
 - **No verified proof of idempotent-publish behavior under a real NATS
   outage**, unlike `baskets`' `TestStartBasket_Execute_SucceedsAfterNATSRestart`.
   `depot`'s publish path (`publishWithRetry`/`publishDomainEvent`) is

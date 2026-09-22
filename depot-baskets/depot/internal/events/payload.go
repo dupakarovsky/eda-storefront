@@ -9,7 +9,9 @@ import (
 
 // ShoppingListCreatedPayload is the concrete type to be converted to when
 // an Event ShoppingListCreated is to be published to the stream
-type ShoppingListCreatedPayload struct{}
+type ShoppingListCreatedPayload struct {
+	OrderID string `json:"order_id"`
+}
 
 // ItemAddedPayload is the concrete type to be converted to when
 // an Event ItemAdded is to be published to the stream
@@ -44,7 +46,9 @@ func toPayload(event domain.Event) (any, error) {
 	switch e := event.(type) {
 
 	case domain.ShoppingListCreated:
-		return ShoppingListCreatedPayload{}, nil
+		return ShoppingListCreatedPayload{
+			OrderID: e.OrderID,
+		}, nil
 
 	case domain.ItemAdded:
 		return ItemAddedPayload{

@@ -143,11 +143,13 @@ func (x *Stop) GetItems() []*Item {
 	return nil
 }
 
+// depot/depotpb/api.proto — replaces the existing ShoppingList message
 type ShoppingList struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
-	Stops         []*Stop                `protobuf:"bytes,3,rep,name=stops,proto3" json:"stops,omitempty"`
+	OrderId       string                 `protobuf:"bytes,2,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	Stops         []*Stop                `protobuf:"bytes,4,rep,name=stops,proto3" json:"stops,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -189,6 +191,13 @@ func (x *ShoppingList) GetId() string {
 	return ""
 }
 
+func (x *ShoppingList) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
 func (x *ShoppingList) GetStatus() string {
 	if x != nil {
 		return x.Status
@@ -206,6 +215,7 @@ func (x *ShoppingList) GetStops() []*Stop {
 // === CreateShoppingList ===
 type CreateShoppingListRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	OrderId       string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -238,6 +248,13 @@ func (x *CreateShoppingListRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CreateShoppingListRequest.ProtoReflect.Descriptor instead.
 func (*CreateShoppingListRequest) Descriptor() ([]byte, []int) {
 	return file_api_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CreateShoppingListRequest) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
 }
 
 type CreateShoppingListResponse struct {
@@ -864,12 +881,14 @@ const file_api_proto_rawDesc = "" +
 	"\n" +
 	"store_name\x18\x02 \x01(\tR\tstoreName\x12%\n" +
 	"\x0estore_location\x18\x03 \x01(\tR\rstoreLocation\x12$\n" +
-	"\x05items\x18\x04 \x03(\v2\x0e.depot.v1.ItemR\x05items\"\\\n" +
+	"\x05items\x18\x04 \x03(\v2\x0e.depot.v1.ItemR\x05items\"w\n" +
 	"\fShoppingList\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\x12$\n" +
-	"\x05stops\x18\x03 \x03(\v2\x0e.depot.v1.StopR\x05stops\"\x1b\n" +
-	"\x19CreateShoppingListRequest\"Y\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
+	"\border_id\x18\x02 \x01(\tR\aorderId\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12$\n" +
+	"\x05stops\x18\x04 \x03(\v2\x0e.depot.v1.StopR\x05stops\"6\n" +
+	"\x19CreateShoppingListRequest\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\"Y\n" +
 	"\x1aCreateShoppingListResponse\x12;\n" +
 	"\rshopping_list\x18\x01 \x01(\v2\x16.depot.v1.ShoppingListR\fshoppingList\"t\n" +
 	"\x0eAddItemRequest\x12(\n" +

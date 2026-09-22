@@ -4,36 +4,43 @@ import (
 	"testing"
 
 	"github.com/dupakarovsky/eda-storefront/depot/internal/domain"
-	"github.com/dupakarovsky/eda-storefront/depot/internal/events"
 )
 
-func TestShoppingList_toPayload(t *testing.T) {
+func TestNewShoppingList(t *testing.T) {
 
-	sl, _, _ := domain.NewShoppingList("sl-1")
-	event1, _ := sl.AddItem("store-1", "Store A", "Avenue ALetter, number 123", "product-1")
-	// event2, _ := sl.AddItem("store-1", "Store A", "Avenue ALetter, number 123", "product-2")
-
-	envelope1, err := events.NewEnvelope(event1)
+	sl, event, err := domain.NewShoppingList("sl-1", "order-1")
 	if err != nil {
-		t.Fatalf("error creating envelopping: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	env1Json, err := envelope1.Marshal()
-	if err != nil {
-		t.Fatalf("error marshaling envelopping: %v", err)
+	if sl.OrderID != "order-1" {
+		t.Errorf("expected order id %q, got %q", "order-1", sl.OrderID)
+	}
+	if sl.Status != domain.ShoppingListPendingStatus {
+		t.Errorf("expected status %q, got %q", domain.ShoppingListPendingStatus, sl.Status)
+	}
+	if len(sl.Stops) != 0 {
+		t.Errorf("expected empty Stops, got %d entries", len(sl.Stops))
 	}
 
-	// json [
-	// {
-	// 	"aggregate_id":"sl-1",
-	// 	"event_name":"ItemAdded",
-	// 	"occurred_at":"2026-09-14T15:41:34.405014322-03:00",
-	// 	"data":{
-	// 		"store_id":"store-1",
-	// 		"product_id":"product-1",
-	// 		"quantity":1}
-	// 	}
-	// ]
+	created, ok := event.(domain.ShoppingListCreated)
+	if !ok {
+		t.Fatalf("expected ShoppingListCreated event, got %T", event)
+	}
+	if created.AggregateID() != "sl-1" {
+		t.Errorf("expected aggregate id %q, got %q", "sl-1", created.AggregateID())
+	}
+	if created.OrderID != "order-1" {
+		t.Errorf("expected event order id %q, got %q", "order-1", created.OrderID)
+	}
+}
 
-	t.Logf("json [%v]", string(env1Json))
+func TestNewShoppingList_BlankOrderID(t *testing.T) {
+	sl, event, err := domain.NewShoppingList("sl-1", "")
+	if err != domain.ErrOrderIDIsBlank {
+		t.Errorf("expected ErrOrderIDIsBlank, got %v", err)
+	}
+	if sl != nil || event != nil {
+		t.Errorf("expected nil shopping list and event on error, got %+v / %+v", sl, event)
+	}
 }

@@ -15,7 +15,10 @@ func TestAddItem_Execute_Succeeds(t *testing.T) {
 
 	// generate an id for the list
 	listID := uniqueID("add-item-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+
+	orderID := uniqueID("add-item-list-order")
+
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 
@@ -62,7 +65,9 @@ func TestAddItem_Execute_RejectsUnknownStore(t *testing.T) {
 
 	// generate a uniqueID for the list
 	listID := uniqueID("add-item-unknown-store-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("add-item-unknown-store-order")
+
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 
@@ -90,7 +95,9 @@ func TestAddItem_Execute_RejectsUnknownProduct(t *testing.T) {
 
 	// create a new list
 	listID := uniqueID("add-item-unknown-product-list")
-	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID); err != nil {
+	orderID := uniqueID("add-item-unkown-product-order")
+
+	if _, err := mod.CreateShoppingListUC.Execute(ctx, listID, orderID); err != nil {
 		t.Fatalf("failed to create shopping list: %v", err)
 	}
 
