@@ -285,7 +285,7 @@ That closes Phase 1. Run `go build ./...` from the `ordering` module root to
 confirm everything compiles together, and let me know when you're ready to move
 to Phase 2 — the `baskets`/`depot` contract changes.
 
-______________________________________________________________________
+---
 
 ## Phase 2
 
@@ -422,7 +422,7 @@ One more application-layer detail worth deciding now: the store lookup happens
 validation), so a mid-checkout catalog change can't produce an inconsistent
 result.
 
-______________________________________________________________________
+---
 
 Does Option B (map-based enrichment, domain trusts the map's completeness) match
 how you'd want this shaped? If so, I'll ask for `basket_test.go` next so Step
@@ -749,3 +749,91 @@ That closes the two changes `journey_progress.md` flagged as needed before
 Phase 2's close, or are you ready to move straight into Phase 3 (wiring
 `ordering`'s HTTP/NATS/module layer, plus the `depotclient` and orchestration
 logic itself)?
+
+## **Phase 3 — Consuming `BasketCheckedOut` → Creating the Order**
+
+- **Step 1 — `internal/events` package.** `envelope.go`, `payload.go`,
+  `subjects.go`, `stream.go` — same structure as `depot`'s, giving `ordering`
+  the ability to envelope and address its own domain events (`OrderCreated` for
+  now; `OrderReadied`/`OrderCanceled` will get payload mappings added in later
+  phases as those use cases arrive).
+- **Step 2 — `publish_event.go` + `publish_retry.go`.** The retry-with-backoff
+  publish helper (ADL 0007 policy, ADL 0015 idempotent msg-ID), same shape as
+  `depot`'s.
+- **Step 3 — `CreateOrder` use case.** Takes a `BasketCheckedOut` payload
+  (already itemized per Phase 2's `baskets` change), constructs and saves an
+  `Order` via `domain.NewOrder`, publishes `OrderCreated`. No `depot` call yet —
+  `ShoppingListID` stays unset on the `Order` at this point; that gets filled in
+  when Phase 4 adds the `depotclient` orchestration into this same use case.
+- **Step 4 — `BasketCheckedOut` subscriber wiring.** Consumes off the `baskets`
+  stream, unmarshals the envelope, invokes `CreateOrder.Execute`.
+- **Step 5 — `module.go`.** Wires Postgres, NATS, the publisher, the one
+  subscriber, and `CreateOrder` together — mirrors `depot.go`'s shape.
+- **Step 6 — `main.go`.** Two concurrent listeners under `foundation/shutdown`
+  (HTTP health endpoint + the one subscriber) — same two-listener shape `depot`
+  already proved in ADL 0012, not yet the three-listener case (that arrives in
+  Phase 5 once the second subscriber exists).
+
+This is a tighter, more self-contained phase than what I first sketched — by the
+end of it, `ordering` is a genuinely running service that reacts to a real
+`basket` checkout and produces a real, persisted, published `Order`, even though
+that `Order` doesn't have a shopping list linked to it yet.
+
+### Step 1 -- Events Package
+
+Let's build the `events` package. This mirrors `depot`'s own `internal/events`
+package almost exactly — same four files, same responsibilities — since this is
+the third time this system has built this exact pattern (`stores`, `depot`, now
+`ordering`), and ADL 0007/0015 already settled how it should work.
+
+```go
+// ordering/internal/events/envelope.go
+```
+
+```go
+// ordering/internal/events/payload.go
+```
+
+```go
+// ordering/internal/events/subjects.go
+```
+
+```go
+// ordering/internal/events/stream.go
+```
+
+What's happening here, and a couple of things worth flagging:
+
+I mapped payloads for all three of `Order`'s domain events (`OrderCreated`,
+`OrderReadied`, `OrderCanceled`), not just `OrderCreated`. That might look ahead
+of where we are — this phase only publishes `OrderCreated` — but the domain
+layer already fully defines all three events (Phase 1), and `toPayload`'s job is
+purely mechanical: "here's how this domain event's fields become wire JSON."
+There's no orchestration logic hiding in there, so mapping all three now costs
+nothing and avoids a `switch` that's deliberately incomplete for events we
+already know the shape of. Contrast this with `depotclient` or the subscriber
+wiring, where _actually calling_ `CreateOrder`/`CompleteOrder` for events not
+yet built would be a real placeholder gap — that's not the case here.
+
+Second, notice `stream.go` only defines `OrderingStreamName` — the stream
+`ordering` owns and publishes to. `depot`'s equivalent file also defines
+`StoresStreamName`, because `depot` needs to reference an external stream to
+subscribe to it. I've deliberately left `BasketsStreamName` out of this file for
+now; it'll get added in Step 4 when we actually wire the subscriber that needs
+it, rather than introduced speculatively here.
+
+Third — `Envelope`, unlike the domain layer, has zero changes from `depot`'s
+version beyond the import path. That's expected and fine: enveloping/marshaling
+is infrastructure, not domain-specific behavior, so it should look identical
+across every service using this pattern.
+
+There's nothing to run yet — this package has no entry point of its own, it only
+gets exercised once `CreateOrder` (Step 3) calls `NewEnvelope`. If you want to
+sanity-check it compiles on its own before we move forward,
+`go build ./ordering/...` from the workspace root should succeed cleanly
+(nothing calls this package yet, so it's dead code for the moment, but it should
+compile). Let me know how that goes, or if you'd rather just eyeball it and move
+on — either is fine at this stage since there's no real behavior to observe yet.
+
+Any questions on this before we move to Step 2 — the
+`publish_event.go`/`publish_retry.go` pair?

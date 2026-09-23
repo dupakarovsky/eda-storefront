@@ -93,6 +93,50 @@ its own `Order` row.
 unit rather than passing a `quantity`, avoiding a signature change to an
 already-live method.
 
+______________________________________________________________________
+
+## Phase Plan
+
+**Phase 1 — Order Aggregate & Persistence.** Define `domain.Order` (status enum:
+`created` → `readied`/`canceled`, items with `product_id`/`store_id`/`quantity`,
+a `shopping_list_id` field to be filled in later), its domain events, and the
+Postgres repository — current-state rows per ADL 0002, with a concurrency
+strategy we'll decide explicitly rather than default. Testable standalone, no
+NATS/HTTP yet.
+
+**Phase 2 — Contract Changes to `baskets` and `depot`.** Enrich
+`BasketCheckedOut`'s payload in `baskets` (touching the `Checkout` use case,
+since it needs each item's `store_id` from the catalog cache). Add `order_id` to
+`depot`'s `CreateShoppingList` (domain constructor, application use case, proto
+message, handler). This is where the `baskets`/`depot` source you provided gets
+edited directly.
+
+**Phase 3 — Consuming `BasketCheckedOut` → Creating the Order.** Wire up
+`ordering`'s first `Subscriber` (the `baskets` stream); the use case that
+projects the event into a new `Order` and publishes `OrderCreated`.
+
+**Phase 4 — Orchestrating `depot`: `CreateShoppingList` + `AddItem`.** Build the
+`depotclient` wrapper; call it from the order-creation flow to create and
+populate the shopping list, storing the returned `shopping_list_id` on the
+`Order`. This is where we'll work out failure-handling philosophy for a
+synchronous downstream command — a new kind of gap, distinct from ADL 0007's
+publish-retry gap.
+
+**Phase 5 — Consuming `ShoppingListCompleted` → Order Readied.** Second
+`Subscriber` (the `depot` stream); look up the `Order` by `shopping_list_id`,
+transition it, publish `OrderReadied`.
+
+**Phase 6 — Synchronous API Surface.** `ordering`'s own ConnectRPC server:
+`GetOrder` (ADL 0008-compliant query path) and `CancelOrder` (deciding then
+whether cancellation needs to reach into `depot` too).
+
+**Phase 7 — Containerization & Live Verification.** Dockerfile,
+`docker-compose.yaml`/`Makefile` wiring, migrations, and the same
+live-verification discipline (curl script, concurrency test,
+redelivery/idempotency tests) every prior service got.
+
+______________________________________________________________________
+
 ## Phase 1 — Order Aggregate & Persistence (COMPLETE)
 
 **Step 1 — `Item`, `OrderStatus`, `Order` struct.** `OrderStatus` has three
@@ -201,3 +245,169 @@ in either service should move:
    no store reference today).
 1. `depot`'s `CreateShoppingList`: add `order_id` — domain constructor,
    application use case, proto message, connect handler.
+
+## Phase 2 — Cross-Service Contract Edits: `baskets` and `depot` (COMPLETE)
+
+Phase 2 executed the two breaking changes to already-live services that ADL 0016
+required before `ordering` could be built against them: enriching `baskets`'
+`BasketCheckedOut` event with itemized data, and adding `order_id` to `depot`'s
+`CreateShoppingList`. Both were fully anticipated by name in each service's own
+`CONTRACT.md` non-goals section before this phase began — no new design
+questions, only the mechanics of applying a known, agreed change across domain,
+application, wire format, and (for `depot`) schema and proto layers.
+
+### Part A — `baskets`: enriching `BasketCheckedOut`
+
+**Design decision (Step 1).** Store-ID resolution follows the same convention
+`AddItem` already established: the application layer resolves catalog data, the
+domain layer trusts what it's handed rather than re-validating it. Two shapes
+were considered for getting resolved data into the domain — passing a
+fully-built item list, or passing a `productID → storeID` map and letting domain
+iterate its own `Items` — and the map (Option B) was chosen specifically to keep
+`Basket.Items` as the single source of truth for "what's in this checkout," with
+no parallel list that could drift out of sync.
+
+**Domain (Step 2).** `Basket.Checkout(storeIDs map[string]string)` replaces the
+old no-arg `Checkout()`. New sentinel `ErrProductNotInCatalog` guards against a
+map miss — a defensive check that should never fire in practice (a product
+surviving from `AddItem`-time validation to checkout should always resolve),
+matching `AddItem`'s own precedent of trusting already-validated data. One
+incidental improvement: the original single `b.Status != BasketOpenStatus` check
+was split into an `ErrBasketAlreadyCheckedOut` check (checked first) and the
+general `ErrBasketNotOpen` check — a second `Checkout` call on an
+already-checked-out basket now reports the more specific error. Both still map
+to `CodeInvalidArgument`, so no HTTP-visible behavior changed, only the error
+message. New domain type `ItemCheckedOut{ProductID, StoreID, Quantity}`;
+`BasketCheckedOut` event gained `Items []ItemCheckedOut`.
+
+**Application (Step 3).** `Checkout.Execute` gained a
+`catalogRepo catalog.Repository` dependency (interface, not the concrete
+Postgres type — kept consistent with every other application-layer repository
+dependency in this system). Rather than one `FindProductByID` call per basket
+item, a new batched method was added to the `catalog.Repository` interface:
+`FindStoreIDsByProductIDs(ctx, productIDs []string) (map[string]string, error)`,
+implemented via a single `WHERE id = ANY($1)` query — avoids N round-trips for a
+basket with N items, and returns exactly the map shape `Basket.Checkout` needs.
+Runs inside the existing `WithLock` transaction, same scoping `AddItem`'s
+product validation already uses. `baskets.go`'s `NewCheckout` call site updated
+with the new arg — a reminder that a use case's constructor signature change
+always ripples to its module wiring, not just its own file.
+
+**Wire format & contract (Step 4).** `events/payload.go` gained
+`ItemCheckedOutPayload`/updated `BasketCheckedOutPayload` matching the
+`product_id`/`store_id`/`quantity` shape ADL 0016 specified.
+`baskets-CONTRACT.md` updated: documented payload now shows the item list, and
+the "known limitation: carries no item list" note (present since Phase 3 of the
+original `baskets` build) is resolved and removed.
+
+**Verification.** Domain suite: 5/5 `TestBasket_Checkout` subtests + existing
+suite, all passing. Application suite (real Postgres/NATS):
+`TestCheckout_Execute_Succeeds` (multi-store case — two products under two
+different stores, confirms the map correctly disambiguates per-store resolution)
+and `TestCheckout_Execute_RejectsEmptyBasket`, both passing, with NATS logs
+confirming `BasketCheckedOut` actually published. One gap noted but deliberately
+left open: no application-layer test exercises `ErrProductNotInCatalog`'s
+propagation through `Execute` — the only way to trigger it for real requires a
+product added then removed from the catalog before checkout, and the error is
+already thoroughly covered at the domain level. Worth revisiting if `stores`'
+`RemoveProduct` path becomes more directly exercised in a future project.
+
+### Part B — `depot`: adding `order_id` to `CreateShoppingList`
+
+**Domain (Step 5).** `NewShoppingList(id, orderID)` now requires a non-blank
+`orderID` (new sentinel `ErrOrderIDIsBlank`, following the same pattern as
+`ErrStoreIDIsBlank`/`ErrProductIDIsBlank` in the same file).
+`ShoppingList.OrderID` and `ShoppingListCreated.OrderID` both added;
+`ReconstituteShoppingList` signature updated to match. All 24 existing
+`NewShoppingList("sl-1")` call sites in `shopping_list_test.go` needed a second
+argument — mechanical, since none of those tests' actual assertions depend on
+`OrderID`. Two new tests added: one confirming `OrderID` round-trips onto both
+the struct and the event, one confirming the blank-`orderID` guard. Full 26-test
+domain suite green.
+
+**Application, proto, connectapi, Postgres (Step 6).**
+`CreateShoppingList .Execute(ctx, id, orderID)` signature updated. Proto:
+`ShoppingList` message gained `order_id` (so responses echo it back, not just
+requests — kept symmetric with the domain struct and useful for downstream
+debugging/ verification without cross-referencing); `CreateShoppingListRequest`
+gained `order_id`. Regenerated via `buf generate` per ADL 0003's tooling choice.
+`connectapi/errors.go`'s `mapError` gained a case for `ErrOrderIDIsBlank` →
+`CodeInvalidArgument` (previously would have fallen through to `CodeInternal`,
+which is wrong for a caller-input error). New migration
+(`000002_add_order_id_to_shopping_lists`) adds
+`order_id TEXT NOT NULL DEFAULT ''` — `DEFAULT ''` chosen specifically to avoid
+breaking existing test rows from prior phases, matching `ordering`'s own
+established empty-string-means-unset convention for its `shopping_list_id`
+column. Postgres repository's `Save`/`find` both updated for the new column;
+`order_id` is deliberately never touched on `Save`'s `ON CONFLICT` update clause
+— immutable once set at creation, same as `id` itself.
+`create_shopping_list_test.go` updated for the new signature plus an `OrderID`
+round-trip assertion.
+
+**Contract.** `depot-CONTRACT.md` updated: `CreateShoppingList`'s row now
+documents `{order_id}` as the request shape; `ShoppingListCreated`'s payload now
+shows `order_id`; the "No `orderID` on `ShoppingList`" non-goal (present since
+`depot`'s original build, explicitly flagged there as provisional pending this
+exact project) is replaced with a note describing the breaking change, the
+`DEFAULT ''` fallback for pre-existing rows, and the immutability guarantee.
+
+**Verification.** Full 16-test application suite green (every use case depending
+on `CreateShoppingList` under the hood — `AddItem`, `Cancel`, `Complete`,
+`Initiate`, `RemoveItem`, `Get` — passed without direct modification, confirming
+the shared test setup path absorbed the new required argument cleanly). Live
+curl script run against the full containerized stack (`stores` + `depot` +
+Postgres + NATS): full lifecycle (create → add → add-duplicate →
+add-second-store → remove → initiate → blocked-add-after-initiate → complete →
+blocked-cancel-after-complete) confirmed working end-to-end, with `orderId`
+round-tripping correctly through every response. Two run-throughs were needed —
+the first used a stale `curl -d '{}'` (pre-ADL-0016 request shape) for
+`CreateShoppingList`, which correctly triggered `ErrOrderIDIsBlank` and cascaded
+`not found` through every dependent step; this confirmed the guard works
+end-to-end through the real HTTP/Connect layer, not just in unit tests, even
+though it wasn't the run's original intent. Script fixed to send a real
+`order_id`, second run fully green.
+
+## State at End of Phase 2
+
+- `baskets` and `depot` both remain "Live" in `system-state.md` — no service was
+  taken down or newly stood up this phase, only two already-live services'
+  contracts changed in place.
+- `baskets-CONTRACT.md` and `depot-CONTRACT.md` are both now accurate and
+  current — the two provisional/known-limitation notes that existed specifically
+  to flag this future work are both resolved.
+- `ordering`'s Phase 1 work (the `Order` aggregate, built against the
+  _pre_-Phase-2 assumption that these contracts would eventually look this way)
+  is now unblocked: `depotclient` (Phase 3) can be built against
+  `CreateShoppingList`'s real, current signature rather than a forward reference
+  to a not-yet-applied ADL.
+- No changes to `stores`, `foundation`, or any other service this phase —
+  confirmed by ADL 0016's own scoping ("nothing else in `baskets`/`depot`/
+  `stores` changes").
+
+## What Carries Into Phase 3
+
+Phase 3 wires `ordering`'s HTTP/NATS/module layer and builds the orchestration
+logic itself — the actual point of Project 3, per ADL 0016's Design A:
+
+1. **`depotclient`** — a ConnectRPC client wrapping `depot`'s now-final
+   `CreateShoppingList(order_id)` and `AddItem` (unit-at-a-time, per ADL 0016's
+   decision to leave `AddItem` untouched rather than add a `quantity`
+   parameter).
+1. **Two concurrent NATS subscribers** — `baskets`' `BasketCheckedOut` (now
+   carrying the item list Phase 2 added) and `depot`'s `ShoppingListCompleted` —
+   extending `foundation/shutdown`'s multi-listener `Service` pattern (ADL 0012)
+   to three concurrent listeners (HTTP + two subscribers) for the first time in
+   this system.
+1. **`CreateOrder` orchestration**: consume `BasketCheckedOut` → construct
+   `Order` from its now-itemized payload → call `depot.CreateShoppingList`
+   synchronously → call `depot.AddItem` once per unit → store the returned
+   `shopping_list_id` on the `Order` row.
+1. **`CompleteOrder`**: consume `ShoppingListCompleted` → correlate back to the
+   `Order` via the stored `shopping_list_id` (Phase 1 deferred the
+   `FindByShoppingListID` lookup/index to exactly this point — now concrete) →
+   `MarkReadied()`.
+1. A new failure mode this system hasn't had to handle yet, per ADL 0016's own
+   Consequences: a downstream synchronous command
+   (`depot.CreateShoppingList`/`AddItem`) failing or timing out
+   mid-orchestration — distinct from ADL 0007's publish-failure gap, and needs
+   an explicit decision in Phase 4 rather than being assumed away.
