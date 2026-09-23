@@ -837,3 +837,233 @@ on — either is fine at this stage since there's no real behavior to observe ye
 
 Any questions on this before we move to Step 2 — the
 `publish_event.go`/`publish_retry.go` pair?
+
+### Step 2 — the publish helpers
+
+These are copied verbatim in shape from `depot`'s (and `stores`' before that) —
+same retry budget, same per-attempt timeout, same reused-`msgID`-across-attempts
+idempotency discipline from ADL 0015. Nothing new to design here; this is
+exactly the kind of infrastructure code that should look identical every time
+it's built, per ADL 0007's own precedent.
+
+```go
+// ordering/internal/application/publish_retry.go
+```
+
+```go
+// ordering/internal/application/publish_event.go
+```
+
+Both files land in `internal/application` — same package `CreateOrder` (Step 3)
+will live in, since `publishDomainEvent` is a package-private helper every use
+case in that package calls, exactly the pattern `stores` and `depot` already
+established. One thing worth naming explicitly, since it's easy to let slide by:
+`msgID := uuid.NewString()` happens once, outside `publishWithRetry`'s loop, and
+the same value rides along every one of the five attempts. That's the whole
+mechanism ADL 0015 exists to explain — a fresh ID per attempt would make
+JetStream see five unrelated messages instead of one message retried five times,
+defeating the deduplication the stream's `Duplicate Window` provides. It's a
+one-line difference from "obviously wrong," so it's worth double-checking
+against your own copy once you've typed it out.
+
+This package still won't compile _cleanly_ as a whole yet —
+`internal/application` doesn't exist as a directory with any other files, and Go
+is fine with that, but there's nothing calling `publishDomainEvent` yet, so like
+Step 1, this is inert until Step 3 gives it a caller. `go build ./ordering/...`
+should still succeed.
+
+Any questions on the retry/publish mechanics before we move to Step 3 — the
+`CreateOrder` use case itself?
+
+### Step 3 -- CreateOrder
+
+`CreateOrder` follows the same shape as `stores`' `CreateStore` and `depot`'s
+`CreateShoppingList`: construct the aggregate via the domain constructor, `Save`
+it, publish the resulting event. No `WithLock` here — same reasoning those two
+use cases already established: a brand-new aggregate has no existing row to
+protect with `SELECT ... FOR UPDATE`, so the transactional locking pattern only
+applies to use cases that read-modify-write an aggregate that already exists.
+
+```go
+// ordering/internal/application/create_order.go
+```
+
+A few things worth flagging before we move on.
+
+`Execute` takes `id string` and `items []domain.Item` as already-clean
+parameters, not a raw NATS message or a `BasketCheckedOut` payload struct. This
+mirrors how `depot`'s `AddItem` use case takes plain strings, not a wire
+envelope — the `application` layer's contract is "give me domain-shaped inputs,"
+and unmarshaling/translating whatever arrived from outside into that shape is
+the caller's job, not this use case's. Here, that caller is the subscriber we'll
+build in Step 4: it'll unmarshal the `BasketCheckedOut` envelope, convert the
+payload's items into `[]domain.Item`, and hand `Execute` the clean result.
+
+That also answers where the `id` comes from. ADL 0009 established that ID
+generation belongs to "the layer that owns talking to the outside world" — for
+every RPC-triggered `Create` so far, that's been `connectapi`, calling
+`uuid.NewString()` right before invoking `Execute`. Here there's no RPC; the
+outside-world boundary is the NATS subscriber instead. So Step 4's subscriber,
+not `CreateOrder` itself, will be the one generating the order's ID — keeping
+`CreateOrder` exactly as agnostic about _where_ its ID came from as
+`CreateStore.Execute` already is.
+
+Last thing, and it's deliberate: `order.ShoppingListID` stays at its zero value
+(`""`) coming out of this use case — there's no `depotclient` call here yet.
+That's not an oversight, it's this phase's actual scope: Phase 3 gets a real,
+persisted `Order` with `OrderCreated` published; Phase 4 is where this same use
+case grows a call to `depot.CreateShoppingList`/`AddItem` and starts populating
+`ShoppingListID`. Worth sitting with for a second, since it means the `Order`
+this phase produces is genuinely incomplete by design, not by accident — the
+next phase's job is named specifically because of this gap.
+
+Any questions before Step 4 — wiring the actual `BasketCheckedOut` subscriber
+that will call this?
+
+### Step 4 — the `BasketCheckedOut` subscriber handler
+
+First, `stream.go` needs the missing piece I deliberately left out in Step 1:
+
+```go
+// ordering/internal/events/stream.go
+```
+
+Now the handler itself:
+
+```go
+// ordering/internal/application/basket_checked_out.go
+```
+
+A few things worth walking through.
+
+Notice `basketCheckedOutEnvelope`/`basketCheckedOutPayload` are _local_ types,
+duplicating the shape `baskets`' own
+`events.Envelope`/`events.BasketCheckedOutPayload` already define. That's not an
+oversight — it's the same discipline `depot`'s `catalog/project.go` already
+established and `baskets-CONTRACT.md` names explicitly in its non-goals: ADL
+0004 prohibits importing another service's internal packages, so a consumer
+can't share types with the producer even when it would be more convenient. The
+event-name string `"BasketCheckedOut"` and the JSON field names below are
+matched by convention against `baskets-CONTRACT.md`, with no compiler-enforced
+link — a silent rename on `baskets`' side would not fail this build, it would
+just silently stop matching. Same accepted risk, same reasoning, third time this
+pattern's been built.
+
+Second — `id := uuid.NewString()` happening right here, inside the handler, is
+this phase's answer to "where does ID generation happen" from Step 3. The
+handler is `ordering`'s boundary with the outside world for this flow, same role
+`connectapi.Server` plays for RPC-triggered creates under ADL 0009 — so it's the
+one that mints the new `Order`'s ID before calling into `application`.
+
+Now, something I want to flag rather than quietly build past: this handler is
+**not idempotent under redelivery**, unlike `depot`'s catalog projector.
+`depot`'s projector upserts rows keyed by the _source_ event's own
+`aggregate_id` — redelivering the same `ProductAdded` twice just writes the same
+row twice, a no-op the second time. Here, every invocation of this handler —
+including a JetStream redelivery of the exact same `BasketCheckedOut` message,
+which ADL 0013's at-least-once delivery guarantee makes a real possibility, not
+a hypothetical — calls `uuid.NewString()` fresh and creates a _second_, distinct
+`Order` for the same basket checkout. That's a genuine gap, structurally similar
+in spirit to the ones ADL 0007 and `depot-CONTRACT.md`'s non-goals name
+explicitly rather than silently accept.
+
+I'd suggest we note this as a known, deliberate gap for now — consistent with
+how this series has generally deferred a newly-surfaced correctness question to
+its own decision point rather than solving it under pressure mid-step — and
+decide explicitly whether/how to close it (e.g., deriving a deterministic order
+ID from the basket's own aggregate ID, so a redelivery naturally collides on the
+same row) once we're further into the phase and can see the full shape of the
+problem. Want to handle that now, or flag it and keep moving to Step 5 —
+`module.go`?
+
+### Step 5 — `module.go`
+
+This mirrors `depot.go`'s shape closely, but simpler in one direction (no
+catalog cache, no `connectapi.Server` yet — that's Phase 6 per your Phase Plan)
+and mildly more involved in another (this is the first service that both owns a
+stream to publish on _and_ subscribes to a stream it doesn't own, in the same
+module).
+
+```go
+// ordering/ordering.go
+```
+
+A couple of things worth walking through.
+
+Notice `EnsureStream` is called for `events.OrderingStreamName` — the stream
+`ordering` owns — but there's no equivalent call for `events.BasketsStreamName`.
+That's intentional and mirrors `depot.go`/`baskets.go` exactly: a service only
+ever ensures the existence of a stream _it_ owns; the streams it merely
+subscribes to are assumed already ensured by their owning service (`baskets`,
+which is already live). `foundationnats.NewSubscriber` takes `BasketsStreamName`
+as a plain string argument to know where to consume from — it doesn't need to
+have created it.
+
+Second, look closely at `NewCreateOrder(orderRepo, publisher, logger)` — it's
+called **twice**: once inline while building `subscriber`, and again a few lines
+later to populate `Module.CreateOrderUC`. That's a real wart, not a stylistic
+choice — two separate `*CreateOrder` instances now exist, both wrapping the same
+`orderRepo`/`publisher`/`logger`, functionally identical but literally different
+objects in memory. It's harmless _today_ because `CreateOrder` holds no mutable
+state of its own, but it's exactly the kind of duplication that becomes a real
+bug the moment someone adds state to that struct later and only remembers to
+initialize one of the two copies. I left it as-is here specifically so we could
+talk about it, rather than silently fixing it — want to clean it up now
+(construct once, pass the same instance to both the subscriber and the `Module`
+field), or note it and move on since it's cosmetic at this exact moment?
+
+Also flagging, not fixing yet: this file has no `ConnectServer` field and no
+`connectapi.NewServer(...)` call, unlike every prior `module.go` — that's
+expected, since Phase 6 owns building the synchronous API surface, not this
+phase.
+
+Let me know your call on the duplicate `NewCreateOrder` construction, and once
+that's settled we'll move to Step 6 — `main.go`.
+
+### Step 6 -- main.go
+
+Two files for this step: a health handler (mirroring `depot-http-health.go`,
+since `ordering` has no `connectapi` server yet to piggyback health info onto),
+and `main.go` itself.
+
+```go
+// ordering/cmd/service/health.go
+```
+
+A few things worth noting.
+
+The router only registers `GET /health` — no ConnectRPC handler line
+(`router.Handle(path, connectHandler.ServeHTTP)`), because there's no
+`mod.ConnectServer` yet; that arrives in Phase 6. Everything else in `main.go` —
+config load, logger, module init, router/middleware stack, `http.Server`
+construction — is otherwise structurally identical to `depot-main.go`, since
+none of that depends on whether an RPC server exists yet.
+
+The real point of this step is the last line:
+`foundationshutdown.Run(logger, cfg.Server.ShutdownTimeout,
+orderingHTTPService, mod.Subscriber)`.
+That's ADL 0012's `Service` interface doing exactly the job it was generalized
+for — both the HTTP server and the NATS subscriber start concurrently in their
+own goroutines, and a SIGINT/SIGTERM (or either one failing) triggers the same
+coordinated shutdown sequence for both. This is only a two-listener case right
+now (same shape `depot`/`baskets` already proved), not yet the three-listener
+case Phase 5 will bring once `ShoppingListCompleted`'s subscriber exists — but
+it's worth noticing this is the same pattern, just instantiated with a different
+second `Service`.
+
+Also worth flagging: unlike `depot-main.go`, there's no
+`path, connectHandler := ...pbconnect.NewOrderingServiceHandler(...)` line at
+all, because `ordering`'s `.proto`/generated code doesn't exist yet either —
+that's also Phase 6 territory (the `orderingpb` package in the folder structure
+hasn't been created). This `main.go` should compile and run as-is with zero
+references to anything not yet built.
+
+To actually run this, you'll need `go run ./ordering/cmd/service` (or add an
+`ordering/run` target to the `Makefile`, following `stores/run`'s pattern, if
+you'd rather not type the full path each time). Once it's up,
+`curl localhost:8083/health` should return `ok`, and the real test will be
+triggering an actual `baskets` checkout against the live `eda-baskets` container
+and watching `ordering`'s logs pick up the `BasketCheckedOut` event and create a
+real `Order` — want to try that now, or hold off until we've closed the
+idempotency gap first so a real redelivery doesn't immediately demonstrate the
+bug we already know about?

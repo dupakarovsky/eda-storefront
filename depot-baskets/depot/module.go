@@ -18,7 +18,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Module is a type that holds the database and message borker connection,
+// Module is a type that holds the database and message broker connection,
 // repository and handlers
 type Module struct {
 	Logger *slog.Logger
@@ -186,17 +186,3 @@ func (m *Module) Close() {
 	m.NC.Close()
 	m.Pool.Close()
 }
-
-// ----------------------------------------------------------------------------
-
-// placeholderHandler function that will connect to the consumer stream and
-// pull events from it.
-// func placeholderHandler(logger *slog.Logger) foundationnats.MessageHandler {
-//
-// 	return func(ctx context.Context, msg jetstream.Msg) error {
-// 		logger.Info("received stores event (placeholder handler, no-op)",
-// 			"subject", msg.Subject(),
-// 		)
-// 		return nil
-// 	}
-// }

@@ -140,6 +140,13 @@ depot/run:
 	chmod +x ./depot-baskets/depot/bin/depot
 	cd ./depot-baskets/depot && ./bin/depot
 
+ordering/run:
+	@echo 'Running ordering service...'
+	@mkdir -p ./ordering/depot/bin
+	GOOS=linux GOARCH=amd64 go build -o=./ordering/bin/depot ./ordering/cmd/service/
+	chmod +x ./depot-baskets/depot/bin/depot
+	cd ./depot-baskets/depot && ./bin/depot
+
 
 ## ----------------------------------------------------------------------------
 ## -- database access ---
