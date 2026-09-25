@@ -16,6 +16,7 @@ type Config struct {
 	Logger LoggerConfig
 	DB     DBConfig
 	NATS   NATSConfig
+	Depot  DepotConfig
 }
 
 // ServerConfig defines the configuration parameters for the server
@@ -87,4 +88,10 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// DepotConfig sets in the Config the anddress for the Depot service so it can
+// be called by other services
+type DepotConfig struct {
+	URL string `envconfig:"DEPOT_URL" default:"http://localhost:8082"`
 }

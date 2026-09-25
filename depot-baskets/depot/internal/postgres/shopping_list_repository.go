@@ -149,6 +149,44 @@ func (r *ShoppingListRepository) FindByIDForUpdate(ctx context.Context, id strin
 	return r.find(ctx, executorFrom(ctx, r.db), id, true)
 }
 
+func (r *ShoppingListRepository) FindByOrderID(ctx context.Context, orderID string) (*domain.ShoppingList, error) {
+
+	// query to locate only the record for of a shopping list by it's order_id
+	selectStmt := `
+	SELECT id, order_id, status
+	FROM shopping_lists
+	WHERE order_id = $1
+	LIMIT 1
+	`
+
+	var (
+		listID  string
+		orderId string
+		status  string
+	)
+
+	exec := executorFrom(ctx, r.db)
+
+	err := exec.QueryRow(ctx, selectStmt, orderID).Scan(&listID, &orderId, &status)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil, domain.ErrShoppingListNotFound
+		default:
+			return nil, fmt.Errorf("finding shopping list for order %q: %w", orderID, err)
+		}
+	}
+
+	// loads all the Stops that are in this shopping list
+	stops, err := r.loadStops(ctx, exec, listID)
+	if err != nil {
+		return nil, fmt.Errorf("loading stops for shopping list %q: %w", listID, err)
+	}
+
+	// return the domain.ShoppingList type
+	return domain.ReconstituteShoppingList(listID, orderId, domain.ShoppingListStatus(status), stops), nil
+}
+
 // find is a helper method that will return a shopping list
 func (r *ShoppingListRepository) find(ctx context.Context, exec Executor, id string, forUpdate bool) (*domain.ShoppingList, error) {
 

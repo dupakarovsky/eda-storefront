@@ -14,4 +14,5 @@ type ShoppingListRepository interface {
 	WithLock(ctx context.Context, fn func(txCtx context.Context) error) error
 
 	FindByID(ctx context.Context, id string) (*ShoppingList, error)
+	FindByOrderID(ctx context.Context, orderID string) (*ShoppingList, error)
 }

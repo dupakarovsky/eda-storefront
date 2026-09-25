@@ -12,4 +12,5 @@ const (
 // can be published
 var OrderingStreamSubjects = []string{
 	"ordering.order.*",
+	"ordering.deadletter.*",
 }

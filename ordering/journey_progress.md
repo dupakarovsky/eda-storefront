@@ -411,3 +411,118 @@ logic itself — the actual point of Project 3, per ADL 0016's Design A:
    (`depot.CreateShoppingList`/`AddItem`) failing or timing out
    mid-orchestration — distinct from ADL 0007's publish-failure gap, and needs
    an explicit decision in Phase 4 rather than being assumed away.
+
+## Phase 3 Summary — COMPLETE
+
+**Status:** Complete
+
+### What Was Built
+
+The `ordering` service went from domain-and-repository-only (Phase 1) to a
+genuinely running, NATS-consuming service for the first time.
+
+- **`internal/events`** (`envelope.go`, `payload.go`, `subjects.go`,
+  `stream.go`) — enveloping/marshaling infrastructure for `ordering`'s own
+  domain events, mirroring `depot`'s/`baskets`' identical packages. Payload
+  mappings exist for all three of `Order`'s events (`OrderCreated`,
+  `OrderReadied`, `OrderCanceled`), even though this phase only publishes
+  `OrderCreated` — the mapping is purely mechanical and costs nothing to
+  complete now.
+- **`internal/application/publish_event.go` + `publish_retry.go`** — the same
+  retry-with-backoff, idempotent-msgID publish helper pattern established by ADL
+  0007/0015, copied in shape from `depot`'s.
+- **`internal/application/create_order.go`** (`CreateOrder` use case) —
+  constructs and saves a new `Order` from a basket's items, publishes
+  `OrderCreated`. Does **not** yet call `depot` — `ShoppingListID` is left blank
+  by design; that's Phase 4's job.
+- **`internal/baskets/handler.go`** — the translation boundary consuming
+  `baskets`' `BasketCheckedOut` event. Lives in its own package (`baskets`,
+  named for the upstream service it translates, not the action it performs),
+  matching `depot`'s/`baskets`' own precedent of pulling this kind of code out
+  of `application` and into a dedicated package. Defines its own local
+  envelope/payload types rather than importing `baskets`' internal package, per
+  ADL 0004.
+- **`ordering.go`** (`Module`) — wires Postgres, NATS, the publisher, the one
+  `baskets`-stream subscriber, and `CreateOrder` together.
+- **`cmd/service/main.go` + `health.go`** — the service's entry point.
+  Two-listener graceful shutdown (`ORDERING-HTTP` + the `baskets` subscriber)
+  via `foundation/shutdown`'s `Service` interface (ADL 0012) — the
+  three-listener case (a second subscriber for `ShoppingListCompleted`) arrives
+  in Phase 5.
+- **Tests, at every layer, against real Postgres/NATS**: `events` package
+  (envelope/payload round-trip for all three events), `CreateOrder` (create
+  succeeds, empty-items rejection, and idempotency-under-redelivery), and the
+  `baskets.Handler` (success, unknown-event skip, malformed-envelope error,
+  malformed-payload error).
+
+### Issues Found & Resolved
+
+- **`publishWithRetry`'s loop condition was inverted**
+  (`attemp >= publishMaxAttempts` instead of `<=`), making the retry loop never
+  execute and causing `publishDomainEvent` to dereference a nil
+  `*jetstream.PubAck`. Caught immediately by `TestCreateOrder_Execute_Succeeds`
+  — a real panic on first run, not a silent wrong-answer bug — and fixed to
+  `<=`, matching every other `publishWithRetry` in the codebase.
+- **Redelivery was not idempotent.** `baskets.Handler` originally minted a fresh
+  `uuid.NewString()` on every invocation, so a genuine JetStream redelivery of
+  one logical `BasketCheckedOut` (ADL 0013's at-least-once guarantee makes this
+  a real possibility, not hypothetical) would have created a second, distinct
+  `Order` for the same checkout. Resolved by deriving the `Order`'s ID
+  deterministically from the basket's own `AggregateID`
+  (`id := env.AggregateID`), plus a check-before-create guard in
+  `CreateOrder.Execute` (`FindByID` first; if found, return the existing order
+  and skip both the domain constructor and the publish entirely). This is a
+  real, permanent modeling commitment — an `Order`'s ID is now always identical
+  to the `Basket` ID that produced it — made deliberately, not as an incidental
+  side effect. Proven by a dedicated test
+  (`TestCreateOrder_Execute_IsIdempotentOnRepeatedID`) that asserts the
+  underlying NATS stream's message count directly, the same
+  verify-the-stream-not-just-the-return-value discipline ADL 0015 used to catch
+  the original duplicate-publish bug this system already knows about.
+- **First-run stream replay was observed, not a bug.** A brand-new durable
+  consumer with no prior position defaults to `DeliverAll`, so `ordering`'s
+  first startup replayed the entire historical `baskets` stream. Every
+  historical event with no handler mapping was correctly skipped (`WARN`-logged,
+  acked as a no-op) — this is `depot`'s own `catalog.Project` precedent for "we
+  don't care about this event," working as intended.
+
+### Known Gap Found — Not Fixed This Phase
+
+While observing that same replay, one historical `BasketCheckedOut` message
+(predating Phase 2's item-enrichment) correctly failed domain validation
+(`ErrOrderIsEmpty`), exhausted redelivery, and fell into the dead-letter path —
+but **the dead-letter publish itself failed** with
+`nats: no response from stream`. Root cause: `events.OrderingStreamSubjects`
+only declares `ordering.order.*`; `foundationnats.PublishDeadLetter` publishes
+onto `ordering.deadletter.<original-subject>`, which no stream currently owns.
+The message still terminates cleanly (`msg.Term()` runs unconditionally
+regardless of the dead-letter publish's own success), so nothing loops forever —
+but the dead-lettered payload is silently lost rather than durably stored,
+defeating ADL 0013's actual purpose.
+
+**Confirmed to affect `depot` and `baskets` identically** — both services' own
+`*StreamSubjects` declarations have the same gap (no `<service>.deadletter.*`
+entry), so this is a systemic, cross-service issue, not an `ordering`-specific
+bug. Fixing `depot`/`baskets` is out of this project's boundary per ADL 0004 and
+is not addressed here — flagged explicitly so it isn't silently lost, the same
+discipline this system has applied to ADL 0007's outbox deferral and other
+named-but-deferred gaps.
+
+### State at End of Phase 3
+
+- `ordering` is a real, running service: `go run ./ordering/cmd/service` (or
+  `make ordering/run`) starts Postgres/NATS connections, ensures the `ordering`
+  stream, starts the HTTP health endpoint on `:8083`, and consumes `baskets`'
+  stream for real, live `BasketCheckedOut` events.
+- Every use-case layer built this phase (`events`, `CreateOrder`,
+  `baskets.Handler`) is proven against real infrastructure via passing tests,
+  not just plausible by inspection — continuing the test-alongside- code
+  discipline adopted partway through this phase.
+- No live, end-to-end verification against a real `baskets` checkout (triggered
+  through `eda-baskets` itself) has been performed yet — deliberately deferred
+  until the RPC server/client exist (Phase 4/6), so it can be part of a fuller
+  verification script rather than a one-off manual check now.
+- No `connectapi`, no `orderingpb`, no `depotclient` yet —
+  `Order. ShoppingListID` stays blank for every order created so far, by design.
+- `orderingdb` currently contains at least one `Order` row created from the
+  historical replay during first startup,

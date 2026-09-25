@@ -1040,8 +1040,7 @@ construction — is otherwise structurally identical to `depot-main.go`, since
 none of that depends on whether an RPC server exists yet.
 
 The real point of this step is the last line:
-`foundationshutdown.Run(logger, cfg.Server.ShutdownTimeout,
-orderingHTTPService, mod.Subscriber)`.
+`foundationshutdown.Run(logger, cfg.Server.ShutdownTimeout, orderingHTTPService, mod.Subscriber)`.
 That's ADL 0012's `Service` interface doing exactly the job it was generalized
 for — both the HTTP server and the NATS subscriber start concurrently in their
 own goroutines, and a SIGINT/SIGTERM (or either one failing) triggers the same
@@ -1067,3 +1066,448 @@ and watching `ordering`'s logs pick up the `BasketCheckedOut` event and create a
 real `Order` — want to try that now, or hold off until we've closed the
 idempotency gap first so a real redelivery doesn't immediately demonstrate the
 bug we already know about?
+
+### Step 7 -- idempotency in CreateOrder.Execute
+
+Two changes. First, `Execute` in `create_order.go` needs the check-before-create
+guard:
+
+```go
+// ordering/internal/application/create_order.go
+```
+
+That replaces the existing `Execute` method body entirely. Note the added
+`"errors"` import at the top of the file, alongside the existing
+`"context"`/`"fmt"`/`"log/slog"`.
+
+Second, `baskets.Handler` needs to stop generating a random ID and use the
+basket's own aggregate ID instead:
+
+```go
+
+```
+
+That replaces the `id := uuid.NewString()` line and the `Execute` call right
+after it. The `"github.com/google/uuid"` import at the top of `handler.go` is
+now unused and needs to be removed, or the build will fail.
+
+A few things worth walking through.
+
+The guard distinguishes two very different outcomes from `FindByID`:
+`err == nil` means we've genuinely seen this basket before (a real redelivery,
+or literally any repeat call with the same ID) — that's the happy idempotent
+path, log it and return the existing order untouched, no domain reconstruction,
+no publish. `errors.Is(err, domain.ErrOrderNotFound)` means this is a real
+first-time creation — fall through to the original logic unchanged. Any _other_
+error (a genuine Postgres failure, a connection drop) is a third case that must
+not be silently treated as either "already exists" or "doesn't exist" — it gets
+propagated as a real failure, since guessing wrong here would either silently
+skip a legitimate creation or silently duplicate one, exactly the class of bug
+we're trying to close.
+
+Also worth noticing: this makes `CreateOrder.Execute` itself the thing that's
+genuinely idempotent now, not just the handler that calls it. That matters
+because `Execute` is also directly exercised by
+`TestCreateOrder_Execute_Succeeds`, which called it once with a fresh
+`uniqueID`-generated ID — that test's behavior is unaffected, since a fresh ID
+always misses on `FindByID` and takes the creation path exactly as before. But
+it does mean we now have an _untested_ branch — the "already exists, skip" path
+— sitting in code that previously had no such branch at all.
+
+Given the test-first discipline we've been using this phase, want me to write a
+test proving the idempotent branch actually works (call `Execute` twice with the
+same ID, confirm only one `OrderCreated` gets published and both calls return
+the same order) before we consider this gap actually closed, or run it manually
+first and add the test after?
+
+Good instinct — and this is a case where checking `Execute`'s return value alone
+isn't enough, since a duplicated publish is a NATS-stream-level bug, not
+something either overload's return value would ever reveal. We need to verify
+stream contents directly, the same discipline ADL 0015 used to catch the
+original duplicate-publish bug in the first place.
+
+```go
+// ordering/internal/application/create_order_test.go
+```
+
+This needs two additional imports at the top of `create_order_test.go`:
+`"context"` and
+`"github.com/dupakarovsky/eda-storefront/ordering/internal/events"` (for
+`events.OrderingStreamName`), alongside the existing `"errors"` and domain
+import.
+
+A few things worth walking through.
+
+`streamMessageCount` measures a **delta**, not an absolute count —
+`before`/`afterFirst`/`afterSecond` — specifically because this test doesn't run
+in isolation. By this point in the suite, `TestCreateOrder_Execute_Succeeds`,
+`TestCreateOrder_Execute_RejectsEmptyItems`, and every test in `baskets_test`
+have already published real messages onto this same shared `ordering` stream
+(they're all hitting the same live NATS/Postgres, not a fresh instance per
+test). Asserting `afterFirst == 1` would be wrong and flaky depending on run
+order; asserting `afterFirst == before + 1` is the only version of this claim
+that's actually true regardless of what ran before it — same reasoning ADL
+0015's own investigation applied when it inspected real stream state rather than
+trusting an assumption about isolation.
+
+Second, this is the one test in the suite so far that genuinely needs `context`
+imported directly (rather than relying on `t.Context()` alone) — actually,
+`t.Context()` still covers that; the import is needed because
+`streamMessageCount`'s own signature takes `ctx context.Context` as an explicit
+parameter rather than pulling it from `t` internally, keeping that helper
+reusable outside a `*testing.T` if we ever needed it that way. If you'd rather
+have it call `t.Context()` internally and drop the parameter, that's a fine
+simplification — I kept it explicit mostly to make the helper's dependencies
+obvious at the call site.
+
+Third — and this is the real proof the fix works — the test doesn't just check
+"no error happened twice," it specifically proves the stream's message count is
+unchanged after the second call, which is the only way to actually verify
+`publishDomainEvent` was never invoked on the redelivery path, distinct from
+merely proving `Save` didn't error (an upsert wouldn't error either way,
+publish-skipped or not).
+
+Run this with `go test -v ./ordering/internal/application/...` — all three tests
+in that package should now pass, including the new one. Let me know what you
+get.
+
+## Phase 4 — Orchestrating `depot`: `CreateShoppingList` + `AddItem`
+
+**Goal:** after `CreateOrder` saves a new `Order` and publishes `OrderCreated`,
+it synchronously calls `depot` to build the matching shopping list —
+`CreateShoppingList(order_id)` once, then `AddItem` once per unit across every
+item — and persists the returned `shopping_list_id` back onto the `Order` row.
+This is also where we make a real decision about what happens when that
+synchronous downstream call fails partway through, since nothing in this system
+has had to handle that failure shape yet.
+
+### Steps
+
+**Step 1 — `depotclient` package.** Build the ConnectRPC client wrapper around
+`depot`'s already-generated `depotpbconnect.DepotServiceClient` — two methods,
+`CreateShoppingList` and `AddItem`, translating to/from `ordering`'s own domain
+types so `internal/application` never imports `depotpb` directly. This is also
+where we decide how `ordering` learns `depot`'s base URL (a config question —
+I'll bring options to the check-in) and whether `depotclient` is exposed to the
+application layer as a concrete type (matching how `*foundationnats.Publisher`
+is used today) or as an interface (matching how `domain.StoreRepository` is
+used). Worth deciding deliberately rather than defaulting.
+
+**Step 2 — Wire `depotclient` into `ordering.go`.** Instantiate the client in
+`Module.New`, alongside the existing Postgres/NATS wiring.
+
+**Step 3 — Orchestration in `CreateOrder.Execute`.** After the existing
+save-and-publish sequence, call `depotclient.CreateShoppingList`, then loop
+`AddItem` once per unit, then `order.LinkShoppingList(...)` and a second `Save`.
+This step is where we settle the failure-handling philosophy: what does
+`CreateOrder.Execute` do if `CreateShoppingList` succeeds but the third
+`AddItem` call fails? Order already exists and `OrderCreated` already published
+— this is a genuinely new class of partial-failure to reason about, distinct
+from ADL 0007's publish-retry gap.
+
+**Step 4 — Verification.** A live check against the real running `depot` +
+`ordering` + `baskets` stack (triggering a real basket checkout and confirming
+the shopping list appears in `depot` with the right items), plus talking through
+what an application-layer test for this orchestration would need (a fake
+`depotclient` implementation, most likely).
+
+Four steps feels like the right size — Steps 1 and 3 carry the real design
+weight, 2 is mechanical wiring, 4 is where we prove it against the live stack
+the same way every prior phase has.
+
+Let me know if this breakdown looks right, or if you'd split/merge anything —
+and once you're good with it, I'll start on Step 1.
+
+## Step 1 The proto/client question
+
+To call `depot` from `ordering`, we need Go bindings for `depot`'s protobuf
+messages and its ConnectRPC client (`depotpb`/`depotpbconnect`). Two ways to get
+them:
+
+**Option A — import `depot`'s own generated package directly**, via `go.work`
+(which already links every module in this workspace together for exactly this
+kind of local cross-module development, per `roadmap.md`'s own stated purpose
+for it). Zero duplication, zero extra buf setup.
+
+**Option B — copy `depot`'s `.proto` file into `ordering`'s own folder and
+generate a private local copy** of the client bindings there, never importing
+`depot`'s module at all. This is the literal scenario ADL 0004 anticipated and
+reserved space for ("`.proto` files... promoted to the same tier as
+`foundation/`... once adopted") — it keeps `ordering` decoupled from `depot`'s
+module the same way `baskets` refuses to import `stores`' internal packages for
+event consumption.
+
+I'm going to recommend **Option A** for this step, specifically because
+`go.work` exists in this system for exactly this reason, and a generated RPC
+client stub is a wire-format artifact, not domain logic — it's a different
+category from the "don't import another service's implementation" rule ADL 0004
+is really protecting against. But this is a real trade-off (a silent,
+compiler-enforced coupling to `depot`'s module going forward), so tell me if
+you'd rather go Option B — it's a bit more ceremony (you'd need to set up
+`buf.yaml`/`buf.gen.yaml` for `ordering` for the first time) but keeps the
+isolation guarantee airtight.
+
+Assuming Option A, here's Step 1:
+
+### 1. `foundation/config.go` — add depot's URL
+
+```go
+// foundation/config.go
+```
+
+```go
+// foundation/config.go
+```
+
+### 2. `ordering/internal/domain/depot_client.go` — the port
+
+```go
+// ordering/internal/domain/depot_client.go
+```
+
+### 3. `ordering/internal/depotclient/client.go` — the adapter
+
+```go
+// ordering/internal/depotclient/client.go
+```
+
+**What's happening here:**
+
+The `depotclient.Client` never appears in `ordering`'s `application` layer
+directly — `CreateOrder` (Phase 4's Step 3) will depend on `domain.DepotClient`,
+the interface, not this concrete type. That mirrors exactly how `CreateOrder`
+already depends on `domain.OrderRepository` rather than
+`*postgres.OrderRepository`. The payoff is concrete for Step 4: a test can hand
+`CreateOrder` a fake `DepotClient` that returns canned IDs and never touches the
+network, the same way existing application tests presumably could fake a
+repository if they needed to (though in practice this codebase has favored
+testing against real Postgres/NATS — this is the first synchronous
+_cross-service_ dependency, so a fake is much more attractive here than a
+repository fake ever was).
+
+Note `Client.CreateShoppingList` returns a plain `string`, not a
+`*depotpb.ShoppingList` — the translation from wire type to something
+`ordering`'s domain layer can use happens right here, at the boundary, the same
+discipline `toProtoOrder`/`toProtoStore`-style functions apply everywhere else
+in this system, just running in the opposite direction (protobuf response →
+plain Go value) since we're now a client instead of a server.
+
+`Config` here is deliberately just `{URL string}` — a minimal package-owned
+config struct, populated by whoever constructs the client (Step 2), mirroring
+`postgres.Config`/`foundationnats.Config`'s own shape: each infra package owns a
+tiny config type, and the caller assembles it by copying fields off the one
+shared `foundationconfig.Config` that actually reads the environment.
+
+One thing to flag: `foundation/config.go` is shared code every service imports.
+This edit is purely additive (a new optional field with a default, nothing
+existing changes shape), so `stores`, `depot`, and `baskets` are unaffected —
+but it's still a `foundation/` edit, the same category of shared-surface change
+ADL 0007's addendum and ADL 0015 both were.
+
+Go ahead and create these three files (plus the `Depot` field/`DepotConfig`
+addition to your existing `foundation/config.go`), then run `go build ./...`
+from the workspace root. This won't run anything yet — there's no caller wired
+up — but it should compile cleanly, and a successful build is actually the real
+test here: it confirms `go.work` correctly resolves `ordering`'s import of
+`depot`'s generated package across module boundaries. Let me know what you get,
+and let me know your call on the Option A/B question too.
+
+### Step 2 `ordering/model.go` — imports
+
+```go
+
+```
+
+### `ordering/ordering.go` — inside `New`, after the repository is initialized
+
+```go
+
+```
+
+### `ordering/ordering.go` — in the returned `&Module{...}` literal
+
+```go
+
+```
+
+**What's happening here:**
+
+`Module.DepotClient` is typed as `domain.DepotClient` — the interface — not
+`*depotclient.Client`, the concrete type `depotclient.New` actually returns.
+This is the same substitution `StoreRepo domain.StoreRepository` already does in
+`stores-module.go` (`storeRepo := postgres.NewStoreRepository(pool)` assigned
+into a field typed as the interface). Go allows this implicitly because
+`*depotclient.Client` satisfies `domain.DepotClient`'s method set — nothing
+forces the assignment to be explicit, but keeping the _field_ typed as the
+interface is what actually lets `CreateOrder` (Step 3) depend on the abstraction
+rather than the concrete adapter, even though `Module` is the thing constructing
+the concrete value.
+
+`depotclient.New` only needs `cfg.Depot.URL` — a single string — so unlike
+Postgres or NATS there's no connection to open, no error to handle, no
+`defer`/close lifecycle at all. A ConnectRPC client is just a configured HTTP
+client wrapper; the "connection" is per-request, not persistent. That's why this
+block is much shorter than the Postgres/NATS sections above it, and why
+`Module.Close()` doesn't need a new line for it.
+
+One thing I intentionally left out:
+`CreateOrderUC := application.NewCreateOrder(orderRepo, publisher, logger)` a
+few lines further down is untouched for now — it doesn't yet receive
+`depotClient`. That's correct for this step (nothing calls it yet, so passing it
+early would just be dead wiring), but flag it if you'd rather do it in one
+motion now instead of splitting the constructor-signature change into Step 3.
+
+Go ahead and make these edits, then `go build ./...` again from the workspace
+root — should still compile clean, same "does it resolve" check as Step 1, just
+now proving `Module` itself constructs correctly with the new field. Let me know
+how it goes.
+
+### changes to depot
+
+Good — small and contained, exactly the size we agreed on. Two files change on
+`depot`'s side, both mechanical once you see them side by side with what's
+already there.
+
+### 1. `depot/internal/domain/shopping_list_repository.go` — new interface method
+
+```go
+// depot/internal/domain/shopping_list_repository.go
+```
+
+### 2. `depot/internal/postgres/shopping_list_repository.go` — the implementation
+
+```go
+// depot/internal/postgres/shopping_list_repository.go
+```
+
+### 3. `depot/internal/application/create_shopping_list.go` — the idempotency check
+
+```go
+// depot/internal/application/create_shopping_list.go
+```
+
+```go
+// depot/internal/application/create_shopping_list.go
+```
+
+**What's happening here:**
+
+`FindByOrderID` is copy-shaped off `FindByID`/`FindByIDForUpdate`'s existing
+`find` pattern in the same file, just filtering on a different column and
+skipping the `FOR UPDATE` variant entirely — nothing in this design needs row
+locking here, since we're not mutating on this path, only reading to decide
+whether to skip creation.
+
+The `LIMIT 1` is doing real work, not just being defensive: nothing in the
+schema stops two rows from sharing an `order_id` (no unique constraint), and if
+you'd already hit the duplicate-creation bug once before this fix landed, there
+may already be more than one row out there for the same order. `LIMIT 1` means
+this always resolves deterministically to _some_ row rather than erroring on
+`pgx`'s "multiple rows returned" behavior — it won't clean up a pre-existing
+duplicate, but it also won't crash on one.
+
+`Execute`'s new shape is a direct mirror of `ordering.CreateOrder.Execute`'s own
+idempotency check — `FindByOrderID` first, return the existing aggregate on a
+hit, fall through to real construction only on `ErrShoppingListNotFound`. Same
+pattern, one layer down, which is exactly the point: `depot` is now idempotent
+on `order_id` the same way `ordering` is idempotent on basket ID, closing the
+symmetry that was missing before.
+
+One thing to be honest about: the `id` parameter `Execute` receives
+(server-generated fresh on every RPC call, per `connectapi`'s
+`CreateShoppingList` handler) is simply discarded when an existing list is found
+— a wasted UUID generation on every retry, harmless but slightly wasteful. Not
+worth fixing; `ordering`'s own `CreateOrder.Execute` already accepts the same
+minor waste for the same reason.
+
+For testing: this only closes Problem A (duplicate creation) — `AddItem` is
+still unguarded, so calling it in a loop from Phase 4's current
+`orchestrateShoppingList` would still double-count on any retry, until we do the
+`GetShoppingList`-delta piece next. So a clean test here is narrow and
+deliberate: call `depot`'s `CreateShoppingList` twice in a row with the **same**
+`order_id` (via `curl` against your running stack, or a small Go test) and
+confirm the second call returns the _same_ `shoppingList.id` as the first,
+rather than a new one. Don't chain it into a full `AddItem` sequence yet —
+that's the next piece, and testing it now would just confirm the half-fixed
+state you already understand.
+
+Go ahead and make these three edits, rebuild `depot`, and try the
+double-`CreateShoppingList` check. Let me know what you get.
+
+That confirms both branches cleanly: the fresh `order_id` hit
+`publish_event.go`'s real publish path once (`seq=84`), and the identical second
+call skipped straight to the `create_shopping_list.go:41` log line with no new
+publish — exactly the miss-then-hit sequence needed. Problem A is closed and
+verified, not just assumed.
+
+Problem B now. `orchestrateShoppingList` needs to know what's already in the
+list _before_ deciding how many `AddItem` calls to make, and `depot`'s existing
+`GetShoppingList` RPC already returns exactly that — we just need to flatten its
+response into something the loop can subtract against.
+
+### 1. `ordering/internal/domain/depot_client.go` — new interface method
+
+```go
+// ordering/internal/domain/depot_client.go
+```
+
+### 2. `ordering/internal/depotclient/client.go` — the adapter
+
+```go
+// ordering/internal/depotclient/client.go
+```
+
+### 3. `ordering/internal/application/create_order.go` — delta-aware loop
+
+```go
+// ordering/internal/application/create_order.go
+```
+
+**What's happening here:**
+
+The map is keyed by `productID` alone, not `(storeID, productID)`. That's safe
+specifically because a product belongs to exactly one store in `stores`' own
+data model — `stores.Product.StoreID` is fixed at creation, never reassigned —
+so `item.ProductID` alone is already unambiguous as a lookup key across every
+stop `depot` groups the list into. If products could ever move between stores,
+this key would need to widen; they can't, so it doesn't.
+
+`existingQuantities[item.ProductID]` on a Go map returns the zero value (`0`)
+when the key isn't present — so a first-time run (fresh shopping list, empty
+`GetShoppingList` response) computes `remaining := item.Quantity - 0`, i.e. the
+full quantity, identical to the old unconditional loop. The delta logic is a
+strict generalization of the original behavior, not a parallel code path —
+first-time orchestration and resumed orchestration now go through the exact same
+arithmetic.
+
+Notice `GetShoppingList`'s own failure is treated as fatal —
+`orchestrateShoppingList` returns immediately rather than falling back to "just
+add everything anyway." That's a deliberate fail-closed choice: if we can't
+determine what's already there, guessing and adding blindly is precisely the
+double-counting bug we're trying to eliminate, so an unreadable state has to
+halt the orchestration rather than risk silently reintroducing Problem B under a
+different trigger.
+
+One thing this doesn't handle, worth flagging before you test rather than after:
+if `AddItem` itself fails _midway_ through a single unit-by-unit loop for one
+product (say 2 of 3 units succeed, the 3rd fails), the function returns
+immediately on that error — it doesn't finish adding the remaining items for
+_other_ products in `order.Items` first. On the next retry, `GetShoppingList`
+will correctly see that partial 2-of-3 progress and only add the 1 remaining
+unit for that product, so nothing double-counts — but any products listed
+_after_ the failed one in `order.Items` won't get touched until that retry
+either, even though nothing was stopping them individually. That's a minor
+completeness-ordering quirk, not a correctness bug — everything still converges
+correctly on retry — but it's worth knowing the loop isn't parallel or
+independent per-item.
+
+For testing: this is harder to verify with a bare `curl` sequence than Problem A
+was, since simulating "an `AddItem` call fails partway" from the outside isn't
+something you can trigger on demand without either stopping `depot` mid-sequence
+or adding a deliberate failure point. Do you want to test this by manually
+inserting a partial state directly into `depot`'s `shopping_list_items` table
+(simulating "attempt 1 got interrupted here") and then confirming a fresh
+orchestration call only adds the difference — or would you rather do a real
+end-to-end trigger (an actual basket checkout through `baskets`) and just
+confirm normal-path behavior first, saving the partial-failure simulation for
+after?

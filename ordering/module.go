@@ -10,6 +10,7 @@ import (
 	foundationpostgres "github.com/dupakarovsky/eda-storefront/foundation/postgres"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/application"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/baskets"
+	"github.com/dupakarovsky/eda-storefront/ordering/internal/depotclient"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/domain"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/events"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/postgres"
@@ -30,7 +31,8 @@ type Module struct {
 	Publisher  *foundationnats.Publisher
 	Subscriber *foundationnats.Subscriber
 
-	OrderRepo domain.OrderRepository
+	OrderRepo   domain.OrderRepository
+	DepotClient domain.DepotClient
 
 	CreateOrderUC *application.CreateOrder
 }
@@ -115,12 +117,19 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	// initialize the repository for accessing the ordering database tables
 	orderRepo := postgres.NewOrderRepository(pool)
 
+	// -------------------------
+	// Intialize the repository
+	// -------------------------
+	// depotClient lets "ordering" synchronously orchestrate shopping list
+	// creation on "depot" once an Order is created
+	depotClient := depotclient.New(depotclient.Config{URL: cfg.Depot.URL})
+
 	//============================================================================
 	// USE CASE INITIALIZATION
 	//============================================================================
 	//needs to happen here as the Subscriber needs the createOrderUC before we
 	//handle it to the RPC server
-	createOrderUC := application.NewCreateOrder(orderRepo, publisher, logger)
+	createOrderUC := application.NewCreateOrder(orderRepo, depotClient, publisher, logger)
 
 	// -------------------------------------------------
 	// Intialize the subscriber to the "baskets" stream
@@ -143,7 +152,8 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		Publisher:  publisher,
 		Subscriber: subscriber,
 
-		OrderRepo: orderRepo,
+		OrderRepo:   orderRepo,
+		DepotClient: depotClient,
 
 		CreateOrderUC: createOrderUC,
 	}, nil

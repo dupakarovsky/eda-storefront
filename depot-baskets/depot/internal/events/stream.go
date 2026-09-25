@@ -8,4 +8,5 @@ const (
 
 var DepotStreamSubjects = []string{
 	"depot.shopping_list.*",
+	"depot.deadletter.*",
 }

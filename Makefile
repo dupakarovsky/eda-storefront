@@ -110,7 +110,7 @@ migrate/ordering/down:
 ## ----------------------------------------------------------------------------
 ## --- run stores locally -- 
 ## ----------------------------------------------------------------------------
-.PHONY: stores/run foundation/smoke
+.PHONY: foundation/smoke stores/run baskets/run depot/run ordering/run
 
 foundation/smoke:
 	@echo 'Building application...'
@@ -142,10 +142,10 @@ depot/run:
 
 ordering/run:
 	@echo 'Running ordering service...'
-	@mkdir -p ./ordering/depot/bin
-	GOOS=linux GOARCH=amd64 go build -o=./ordering/bin/depot ./ordering/cmd/service/
-	chmod +x ./depot-baskets/depot/bin/depot
-	cd ./depot-baskets/depot && ./bin/depot
+	@mkdir -p ./ordering/bin
+	GOOS=linux GOARCH=amd64 go build -o=./ordering/bin/ordering ./ordering/cmd/service/
+	chmod +x ./ordering/bin/ordering
+	cd ./ordering && ./bin/ordering
 
 
 ## ----------------------------------------------------------------------------

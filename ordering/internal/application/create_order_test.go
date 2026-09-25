@@ -1,11 +1,35 @@
 package application_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
+	"github.com/dupakarovsky/eda-storefront/ordering"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/domain"
+	"github.com/dupakarovsky/eda-storefront/ordering/internal/events"
 )
+
+// streamMessageCount will access the "ordering" jeststream and return it's Messages.
+// It'll be neeeded to verify if one of the test cases.
+func streamMessageCount(t *testing.T, mod *ordering.Module, ctx context.Context) uint64 {
+	t.Helper()
+
+	// access the ordering stream
+	stream, err := mod.JS.Stream(ctx, events.OrderingStreamName)
+	if err != nil {
+		t.Fatalf("failed to get stream: %v", err)
+	}
+
+	// get info object from the stream
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("failed to get stream info: %v", err)
+	}
+
+	// return the number of messages from the stream
+	return info.State.Msgs
+}
 
 func TestCreateOrder_Execute_Succeeds(t *testing.T) {
 
@@ -71,5 +95,67 @@ func TestCreateOrder_Execute_RejectsEmptyItems(t *testing.T) {
 
 	if order != nil {
 		t.Errorf("expected nil order on error, got %+v", order)
+	}
+}
+
+func TestCreateOrder_Execute_IsIdempotentOnRepeatedID(t *testing.T) {
+
+	// instantiate the Module
+	mod := newTestModule(ApplicationTest, t)
+	ctx := t.Context()
+
+	// generate an unique ID for the order
+	id := uniqueID("create-order-idempotent")
+
+	// create an Item
+	items := []domain.Item{
+		{ProductID: uniqueID("idempotent-prod"), StoreID: uniqueID("idempotent-store"), Quantity: 3},
+	}
+
+	// check the number of messages before publication of the event
+	before := streamMessageCount(t, mod, ctx)
+
+	// first call to CreteOrder
+	first, err := mod.CreateOrderUC.Execute(ctx, id, items)
+	if err != nil {
+		t.Fatalf("expected first Execute to succeed, got error: %v", err)
+	}
+
+	// verify that the number of messages increased by 1 from previous count
+	afterFirst := streamMessageCount(t, mod, ctx)
+	if afterFirst != before+1 {
+		t.Fatalf("expected exactly 1 new message after first Execute, got %d new messages", afterFirst-before)
+	}
+
+	// call CreateOrder one more time.
+	second, err := mod.CreateOrderUC.Execute(ctx, id, items)
+	if err != nil {
+		t.Fatalf("expected second Execute to succeed, got error: %v", err)
+	}
+
+	// since we're calling Execute again with the same ID, the handler should NOT
+	// have created a new Order. So the number of messages before and after should
+	// still be the same
+	// ---------------------------------------------------------------------------
+
+	// check the number of messages after the second invocation; expected to be equal
+	afterSecond := streamMessageCount(t, mod, ctx)
+	if afterSecond != afterFirst {
+		t.Errorf("expected no new message on repeated Execute, got %d new messages", afterSecond-afterFirst)
+	}
+
+	// expected the IDs in both invocations to match
+	if second.ID != first.ID {
+		t.Errorf("expected same order id on repeat, got %q then %q", first.ID, second.ID)
+	}
+
+	// expected the status of both invocations to match
+	if second.Status != first.Status {
+		t.Errorf("expected same order status on repeat, got %q then %q", first.Status, second.Status)
+	}
+
+	// expected the the number of entries in Items to not have changed
+	if len(second.Items) != len(first.Items) {
+		t.Fatalf("expected same item count on repeat, got %d then %d", len(first.Items), len(second.Items))
 	}
 }
