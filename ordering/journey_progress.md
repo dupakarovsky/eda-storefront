@@ -526,3 +526,141 @@ named-but-deferred gaps.
   `Order. ShoppingListID` stays blank for every order created so far, by design.
 - `orderingdb` currently contains at least one `Order` row created from the
   historical replay during first startup,
+
+\--
+
+## Phase 4 Summary — COMPLETE
+
+**Status:** Complete (core orchestration logic; live end-to-end verification
+deferred to Phase 6/7)
+
+### What Was Built
+
+`ordering` became a synchronous ConnectRPC _client_ for the first time,
+orchestrating shopping list creation on `depot` as the final step of order
+creation.
+
+- **`internal/domain/depot_client.go`** — the `DepotClient` port:
+  `CreateShoppingList`, `AddItem`, `GetShoppingList`, following the same
+  interface-in-`domain`/implementation-elsewhere convention already used for
+  `OrderRepository`.
+- **`internal/depotclient/client.go`** — the adapter, wrapping `depot`'s
+  generated `depotpbconnect.DepotServiceClient` (imported directly via
+  `go.work`, Option A from Step 1's design discussion). Translates wire types to
+  plain Go values at the boundary; `GetShoppingList` in particular flattens
+  `depot`'s nested `Stops`/`Items` response into a flat
+  `map[productID]quantity`.
+- **`foundation/config.go`** — gained `DepotConfig{URL string}` (`DEPOT_URL` env
+  var), following the same per-package `Config` shape
+  `postgres.Config`/`foundationnats.Config` already use.
+- **`ordering.go`** — `Module` gained a `DepotClient domain.DepotClient` field,
+  constructed from `cfg.Depot.URL`.
+- **`internal/application/create_order.go`** — `CreateOrder.Execute`'s
+  idempotency check changed from "does the order exist" to "is `ShoppingListID`
+  already set," since Phase 3's original guard would have silently skipped
+  retrying the `depot` orchestration entirely on redelivery. A new private
+  `orchestrateShoppingList` helper runs `CreateShoppingList` → `GetShoppingList`
+  (to compute per-product deltas) → `AddItem` only for the remaining units →
+  `LinkShoppingList` → `Save`, called from both the fresh-creation path and the
+  existing-but-unlinked retry path.
+- **`depot`'s side (out of `ordering`'s own boundary, but required to make the
+  above safe):** `ShoppingListRepository` gained `FindByOrderID`;
+  `CreateShoppingList.Execute` now checks it first and returns the existing list
+  on a hit rather than always constructing a new one.
+- **`docker-compose.yaml`** — `ordering`'s service block gained
+  `DEPOT_URL: http://depot:8080` (internal Docker network address, distinct from
+  `depot`'s host-mapped `8082`).
+- Dead-letter subject gap from Phase 3's "Known Gap Found" (missing
+  `<service>.deadletter.*` stream subject) was fixed across all three affected
+  services (`ordering`, `depot`, `baskets`) as prep work before this phase,
+  though not yet tested live.
+
+### Issues Found & Resolved
+
+- **The core problem this phase exists to solve:** a naive "always call
+  `CreateShoppingList`, then loop `AddItem`" orchestration is not safe under
+  JetStream's at-least-once redelivery (ADL 0013). Traced in detail via chat
+  discussion rather than by hitting it in a live test: a partial `AddItem`
+  failure leaves `Order.ShoppingListID` unset, so a redelivered retry re-enters
+  `orchestrateShoppingList` from scratch. Two independent failure modes were
+  identified from that one root cause — duplicate shopping list creation (since
+  `depot`'s `CreateShoppingList` had no memory of `order_id`), and
+  double-counted item quantities (since `AddItem` is additive, not idempotent,
+  and a blind retry would re-add already-added units).
+- **Rejected approach:** a `RemoveShoppingList`/`Delete` capability on `depot`
+  (new domain method, event, repository method, proto RPC, possible migration
+  for cascading delete) was designed in detail as a first candidate — it would
+  have cleaned up every partial attempt by deleting it before retrying. Rejected
+  as disproportionate to the actual requirement ("adequate, not perfect") once a
+  smaller alternative was found; also correctly identified as having its own
+  placement flaw (the ID needed for removal only ever exists as a local variable
+  inside `orchestrateShoppingList`, never persisted, so a naive removal call at
+  the top of `Execute`'s retry branch would have had nothing to remove).
+- **Adopted approach, smaller and non-destructive:** idempotent
+  `CreateShoppingList` on `depot` (query by `order_id` before constructing)
+  closes the duplication problem; a `GetShoppingList`-based delta computation in
+  `orchestrateShoppingList` closes the double-counting problem. Both verified
+  live for `depot`'s half (two `curl` sequences: a pre-existing `order_id`
+  returning its existing list unchanged, and a fresh `order_id` creating once
+  then returning the same list on a second call — confirmed both via response
+  payloads and `depot`'s own logs showing the publish happening exactly once).
+
+### Known, Explicitly Accepted Gaps
+
+- **No locking around the check-then-act sequence.** Neither `depot`'s
+  `FindByOrderID`-then-`Save` nor `ordering`'s `FindByID`-then-orchestrate is
+  wrapped in `WithLock`. Two genuinely concurrent redeliveries of the same
+  message could both pass the "doesn't exist yet" check before either finishes,
+  still producing a duplicate. Narrower window than the "every single retry
+  duplicates" bug this phase fixes, but not zero. This is the same category of
+  gap Phase 1 Step 4 already flagged for `Order` and never fully closed —
+  carried forward again, not newly introduced.
+- **`AddItem` partial-failure ordering.** If one product's `AddItem` loop fails
+  partway, `orchestrateShoppingList` returns immediately rather than continuing
+  to the next product in `order.Items`. Nothing double-counts on retry (the
+  delta logic handles that correctly), but products listed after the failed one
+  see no progress until the next retry, even though nothing was actually
+  blocking them individually.
+- **Live verification deferred, not skipped.** Per the user's direction, testing
+  an actual `AddItem`-partway-failure scenario and a real concurrent-redelivery
+  race was explicitly postponed to Phase 6/7, once `connectapi` exists and the
+  full stack can be exercised end-to-end (real basket checkout → real `ordering`
+  → real `depot` calls) rather than simulated via manual
+  `curl`/direct-database-state tricks. Problem A (duplicate creation) is the
+  only piece verified live so far; Problem B (double-counting) is reasoned
+  through and code-complete but unverified under a real partial failure.
+- **Dead-letter subject fix (`ordering.deadletter.*` and equivalents) is applied
+  but untested.** Fixed as prep work before this phase began; not yet exercised
+  by an actual dead-lettered message in any service.
+
+### State at End of Phase 4
+
+- `ordering` now has a working `depotclient` and an orchestration flow in
+  `CreateOrder.Execute` that survives redelivery without duplicating shopping
+  lists or double-counting items, so far as static review and `depot`-side
+  testing can confirm.
+- `go build ./...` clean across the workspace; the service runs under
+  `docker compose up` with `DEPOT_URL` correctly wired.
+- No `connectapi`, no `orderingpb`, still no synchronous API surface for
+  `ordering` itself — `GetOrder`/`CancelOrder` (Phase 6) remain unbuilt.
+- No second subscriber yet (`ShoppingListCompleted` → `MarkReadied`) —
+  `Order.Status` never advances past `created` in practice yet, even once
+  `ShoppingListID` gets linked.
+
+### Carried Into Phase 5
+
+Phase 5 builds the second `Subscriber` — consuming `depot`'s
+`ShoppingListCompleted` event, correlating it back to an `Order` via the
+now-functional `shopping_list_id` linkage this phase produces, and calling
+`order.MarkReadied()`. This is the first point at which today's
+`FindByShoppingListID` deferral (named back in Phase 1 Step 5, held open
+specifically for this moment) becomes concrete rather than speculative — a
+repository method and likely an index need to actually be built now. It's also
+the third concurrent listener in `ordering` (HTTP + baskets subscriber + this
+new one), extending ADL 0012's multi-listener pattern one step further than any
+prior phase has.
+
+______________________________________________________________________
+
+Let me know once that's appended to your actual `journey_progress.md`, and we
+can move into planning Phase 5 whenever you're ready.

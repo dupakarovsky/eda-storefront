@@ -83,6 +83,22 @@ func (r *OrderRepository) Save(ctx context.Context, order *domain.Order) error {
 	return nil
 }
 
+// FindByID will locate an order by it's ID. This won't be run within a transaction
+func (r *OrderRepository) FindByID(ctx context.Context, id string) (*domain.Order, error) {
+	return r.find(ctx, executorFrom(ctx, r.db), id, false)
+}
+
+// FindByIDForUpdate will locate an order by it's ID. It'll run within a transaction
+func (r *OrderRepository) FindByIDForUpdate(ctx context.Context, id string) (*domain.Order, error) {
+	return r.find(ctx, executorFrom(ctx, r.db), id, true)
+}
+
+func (r *OrderRepository) FindByShoppingListID(ctx context.Context, shoppingListID string) (*domain.Order, error) {
+	return nil, errors.New("FindByShoppingListID: not implemented")
+}
+
+//-------------------------------------------------------------------------------
+
 // replaceItems wiil update the order_items table once the 'order' table has been updated.
 // it'll first delete all Items currently associated with an order ID, then insert the ones
 // that come from the order.Items
@@ -114,16 +130,6 @@ func (r *OrderRepository) replaceItems(ctx context.Context, exec Executor, order
 	// ---------------------
 
 	return nil
-}
-
-// FindByID will locate an order by it's ID. This won't be run within a transaction
-func (r *OrderRepository) FindByID(ctx context.Context, id string) (*domain.Order, error) {
-	return r.find(ctx, executorFrom(ctx, r.db), id, false)
-}
-
-// FindByIDForUpdate will locate an order by it's ID. It'll run within a transaction
-func (r *OrderRepository) FindByIDForUpdate(ctx context.Context, id string) (*domain.Order, error) {
-	return r.find(ctx, executorFrom(ctx, r.db), id, true)
 }
 
 // find is a helper method will return an order in the database with all of it's Items
@@ -165,7 +171,7 @@ func (r *OrderRepository) find(ctx context.Context, exec Executor, id string, fo
 		return nil, fmt.Errorf("loading items for order %q: %w", id, err)
 	}
 
-	// recreate the domain Order from the values retrieved from the database
+	// recreate the domain.Order type from the values retrieved from the database
 	return domain.ReconstituteOrder(orderID, domain.OrderStatus(status), items, shoppingListID), nil
 }
 

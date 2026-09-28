@@ -54,7 +54,6 @@ func (uc *CreateOrder) Execute(ctx context.Context, id string, items []domain.It
 		uc.logger.Info("order already exists, skipping creation", "order_id", id)
 		return uc.orchestrateShoppingList(ctx, existing)
 	}
-
 	// some other unkown error happened here
 	if !errors.Is(err, domain.ErrOrderNotFound) {
 		return nil, fmt.Errorf("checking for existing order: %w", err)
@@ -84,9 +83,9 @@ func (uc *CreateOrder) Execute(ctx context.Context, id string, items []domain.It
 		return order, err
 	}
 
-	// order was created and we need to communicate with depot via rpc to command it to create
-	// a shopping list with our Order.ID
-	// ---------------------------------------------------------------------------------------
+	// order was created and we need to communicate with the depot service via rpc
+	// to command it to create a shopping list with our Order.ID
+	// ---------------------------------------------------------------------------
 
 	// make the orchestration
 	return uc.orchestrateShoppingList(ctx, order)
@@ -103,8 +102,8 @@ func (uc *CreateOrder) orchestrateShoppingList(ctx context.Context, order *domai
 	// INFO: on every failure path here need to return the order to the caller (event on failure) since
 	// the order is already saved to the database and the OrderCreated event was published to the stream.
 
-	// make a rpc call to the depot service to create a new shopping list and recieve a
-	// shopping list ID
+	// make a rpc call to the depot service to create a new shopping list and recieve
+	// back a shopping list ID
 	shoppingListID, err := uc.depotClient.CreateShoppingList(ctx, order.ID)
 	if err != nil {
 		return order, fmt.Errorf("creating shopping list: %w", err)

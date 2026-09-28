@@ -1511,3 +1511,121 @@ orchestration call only adds the difference — or would you rather do a real
 end-to-end trigger (an actual basket checkout through `baskets`) and just
 confirm normal-path behavior first, saving the partial-failure simulation for
 after?
+
+## Phase 5
+
+### Proposed Phase 5 Step Plan
+
+**Step 1 — `CompleteOrder` application use case.** A new
+`application.CompleteOrder` type, structurally parallel to `CreateOrder`: takes
+a `shoppingListID`, looks up the `Order` via the repository's
+`FindByShoppingListID` (new lookup, per Phase 1's deferral — this is where it
+finally gets built), calls `order.MarkReadied()`, saves, and publishes
+`OrderReadied`. We'll need to decide together how it should behave if the order
+is already `readied` (idempotency under redelivery, same discipline as
+`CreateOrder`).
+
+**Step 2 — Repository: `FindByShoppingListID`.** Add this method to
+`domain.OrderRepository`'s interface and implement it in
+`postgres.OrderRepository` — a straightforward indexed lookup, mirroring
+`depot`'s own `FindByOrderID` we just saw added in Phase 4/CONTRACT.
+
+**Step 3 — `depot` event consumer package.** A new `internal/depot` package
+(mirroring `internal/baskets`'s shape) with its own local envelope/payload types
+for `ShoppingListCompleted` (per ADL 0004 — no importing `depot`'s internal
+packages), and a `Handler` function wired to `CompleteOrder`.
+
+**Step 4 — Second `Subscriber` + `Module`/`main.go` wiring.** Extend
+`ordering.go`'s `Module` with a second `foundationnats.Subscriber` against the
+`depot` stream, and extend `main.go`'s `foundationshutdown.Run(...)` call to a
+third concurrent listener (HTTP + baskets subscriber + depot subscriber) — the
+multi-listener pattern from ADL 0012, now at its widest point in this system.
+
+**Step 5 — Live verification / smoke test.** Once wired, we'll talk through what
+a manual end-to-end check looks like (trigger a real basket checkout through to
+a completed shopping list, confirm the `Order` in Postgres flips to `readied`).
+
+A couple of open questions before we start Step 1: should `CompleteOrder` treat
+"order not found for this shopping list ID" as a hard error (log and drop) or
+dead-letter it, given this is a correlation lookup rather than a straightforward
+not-found on a primary key? And for idempotency — same pattern as `CreateOrder`
+(check current state, skip re-work if already `readied`), or did you want to
+discuss alternatives?
+
+## Step 1-CompleteOrder\` application use case
+
+Step 1 is the `CompleteOrder` use case. It needs `FindByShoppingListID` on the
+repository interface, but that method is Step 2. To keep `go build ./...` clean
+in between, we'll add the method to the interface now, with a temporary stub in
+the Postgres repository (the placeholder pattern).
+
+**1a. Interface addition**
+
+```go
+// ordering/internal/domain/order_repository.go (added FindByShoppingListID)
+```
+
+**1b. Temporary stub**
+
+```go
+
+```
+
+**1c. The use case**
+
+```go
+// ordering/internal/application/complete_order.go (new file)
+```
+
+**What's happening here**
+
+The structure mirrors the command use cases you've already built for `stores`
+and `depot`: a locked transaction that finds, mutates, and saves the aggregate,
+followed by a publish outside the transaction. The interesting part is the
+two-step lookup inside `WithLock`. The event we consume only carries the
+shopping list's ID, so we first have to resolve which `Order` it belongs to, and
+that is `FindByShoppingListID`. That lookup is a plain `SELECT` with no
+`FOR UPDATE`, following the same convention as `FindByID`. It therefore can't be
+what serializes concurrent redeliveries. So once we know the order's ID, we call
+`FindByIDForUpdate`, which takes the row lock and reloads the state as it is
+now. From that point on, every decision (is it already readied? is it canceled?)
+is made against locked, fresh data. That is the concurrency reason Phase 1 Step
+4 chose row-level locking for `Order`: two near-simultaneous deliveries of the
+same event hit the same row. The second one blocks at `FindByIDForUpdate` until
+the first commits, then sees `readied` and takes the idempotent path.
+
+The idempotency check follows the `CreateOrder` pattern of inspecting state
+first and skipping the work if it is already done. It differs in one way.
+`MarkReadied` would itself return `ErrOrderAlreadyReadied`, but for a redelivery
+that is a success case, not a failure, and returning the error would push a
+harmless duplicate through five backoff retries into the dead letter. So we
+check `Status` ourselves before calling it. The `alreadyReadied` flag is needed
+because returning `nil` from the callback commits an empty transaction. We then
+have to remember, after `WithLock` returns, that there is no event to publish.
+The canceled case is deliberately not special-cased. `MarkReadied` returns
+`ErrOrderAlreadyCanceled`, which surfaces as a hard error. That is consistent
+with your decision to treat unexpected correlation states as hard errors for now
+and see what the tests tell us.
+
+One consequence to be aware of, which is the same gap `CreateOrder` has. If the
+save commits but `publishDomainEvent` exhausts its retries, the message gets
+redelivered, sees `readied`, and skips the publish, so `OrderReadied` is never
+sent. That is exactly the gap ADL 0007's deferred outbox names. We're inheriting
+it here, not introducing it.
+
+**To run:** from the workspace root, `go build ./...` and then
+`go vet ./ordering/...`. Both should be clean with no output. Nothing calls
+`CompleteOrder` yet, so there's no runtime behavior to observe.
+
+Two things I noticed while reading the files you uploaded. First, the
+`ordering-module.go` I have looks like the Phase 3 version. It calls
+`NewCreateOrder(orderRepo, publisher, logger)` with three arguments, while
+`create_order.go` takes four (with `depotClient`), and it has no `DepotClient`
+field. I'm assuming your real one is already updated per Phase 4, but tell me if
+the upload was stale, since we'll be editing that file in Step 4. Second, the
+`domain.DepotClient` and `depotclient` files weren't in the upload, which is
+fine because we don't need them for this phase.
+
+Give the build a run and let me know how it goes. Any questions on the two-step
+lookup or the `alreadyReadied` flag before we move on to Step 2, the real
+`FindByShoppingListID` query?
