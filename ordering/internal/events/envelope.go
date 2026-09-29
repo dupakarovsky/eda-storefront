@@ -25,6 +25,7 @@ func NewEnvelope(event domain.Event) (Envelope, error) {
 	payload, err := toPayload(event)
 	if err != nil {
 		return Envelope{}, err
+
 	}
 
 	// marshal the payload into a JSON blob

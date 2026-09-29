@@ -9,6 +9,7 @@ import (
 	"github.com/dupakarovsky/eda-storefront/foundation/config"
 	"github.com/dupakarovsky/eda-storefront/foundation/logging"
 	"github.com/dupakarovsky/eda-storefront/ordering"
+	"github.com/dupakarovsky/eda-storefront/ordering/internal/events"
 	"github.com/joho/godotenv"
 )
 
@@ -58,4 +59,25 @@ func newTestModule(logFileName string, t *testing.T) *ordering.Module {
 func uniqueID(tag string) string {
 	id := tag + "-" + time.Now().Format("20060102150405.000000")
 	return id
+}
+
+// streamMessageCount will access the "ordering" jeststream and return it's Messages.
+// It'll be needed to verify in one of the test cases.
+func streamMessageCount(t *testing.T, mod *ordering.Module, ctx context.Context) uint64 {
+	t.Helper()
+
+	// access the ordering stream
+	stream, err := mod.JS.Stream(ctx, events.OrderingStreamName)
+	if err != nil {
+		t.Fatalf("failed to get stream: %v", err)
+	}
+
+	// get info object from the stream
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("failed to get stream info: %v", err)
+	}
+
+	// return the number of messages from the stream
+	return info.State.Msgs
 }

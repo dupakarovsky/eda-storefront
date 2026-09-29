@@ -8,5 +8,5 @@ const (
 
 var BasketsStreamSubjects = []string{
 	"baskets.basket.*",
-	"baskets.deadletter.*",
+	"baskets.deadletter.>",
 }

@@ -662,5 +662,154 @@ prior phase has.
 
 ______________________________________________________________________
 
-Let me know once that's appended to your actual `journey_progress.md`, and we
-can move into planning Phase 5 whenever you're ready.
+## Phase 5 Summary — COMPLETE
+
+**Status:** Complete
+
+### What Was Built
+
+`ordering` gained its second concurrent NATS listener and the closing half of
+its orchestration loop: reacting to `depot`'s `ShoppingListCompleted` event to
+advance an `Order` from `created` to `readied`.
+
+- **`internal/domain/order_repository.go`** — `OrderRepository` gained
+  `FindByShoppingListID`, the lookup Phase 1 Step 5 deliberately deferred to
+  this exact moment.
+- **`internal/postgres/order_repository.go`** — `FindByShoppingListID`
+  implemented: a plain (non-locking) `SELECT ... WHERE shopping_list_id = $1`,
+  same convention as `FindByID`, followed by the existing `loadItems` helper and
+  `ReconstituteOrder`. Two real bugs were caught and fixed before this method
+  saw real data: a `Scan` call missing an `&` on one destination (masked
+  initially because every early test hit the zero-rows path first, which returns
+  before `Scan` ever binds that field), and a stray `sql.ErrNoRows` where every
+  other repository method in this codebase checks `pgx.ErrNoRows` — silently
+  falling through to the generic `default` error branch instead of
+  `domain.ErrOrderNotFound` had it gone uncaught.
+- **`internal/application/complete_order.go`** (`CompleteOrder` use case) —
+  structurally parallel to `CreateOrder`: locates the order by shopping list ID,
+  re-locks it via `FindByIDForUpdate` for a fresh, serialized read, checks
+  whether it's already `readied` (the idempotency path, using the same agreed-on
+  pattern as `CreateOrder`), calls `MarkReadied()`, saves, and publishes
+  `OrderReadied` outside the transaction. An unresolved `shopping_list_id` (no
+  matching order at all) is treated as a hard error and allowed to dead-letter
+  after exhausting redelivery, per this Phase's explicit decision — not defended
+  against or special-cased.
+- **`internal/depot/depot.go`** (`depot.Handler`) — the translation boundary
+  consuming `depot`'s `ShoppingListCompleted` event, mirroring `baskets`'s own
+  `Handler` shape and local envelope type (no import of `depot`'s internal
+  packages, per ADL 0004). `ShoppingListCompleted` carries no payload, so the
+  handler needs only the envelope's `AggregateID` (the shopping list ID) to call
+  `CompleteOrder.Execute`.
+- **`internal/events/stream.go`** — gained `DepotStreamName`, the stream
+  `ordering`'s new subscriber consumes (owned by `depot`, not `ordering`).
+  `OrderingStreamSubjects`'s dead-letter entry was corrected from
+  `ordering.deadletter.*` to `ordering.deadletter.>` — a real, previously
+  undetected bug: `*` matches exactly one subject token, while a dead-letter
+  subject built as `<service>.deadletter.<original-subject>` is several tokens
+  deep once the original subject itself has dots in it
+  (`depot.shopping_list.ShoppingListCompleted` alone is three). The stream
+  simply refused to accept a publish to a subject it didn't actually own,
+  surfacing as `nats: no response from stream`. Confirmed and fixed identically
+  across `stores`, `depot`, and `baskets`' own equivalent declarations, not just
+  `ordering`'s — the same systemic gap Phase 3's "Known Gap Found" section had
+  already flagged as affecting all three services, now actually closed rather
+  than just named.
+- **`ordering.go`** (`Module`) — `Subscriber *foundationnats.Subscriber`
+  (singular) generalized to `Subscribers map[string]*foundationnats.Subscriber`,
+  keyed `"baskets"`/`"depot"`, to hold both concurrent listeners without
+  inventing a second named field per subscriber. `CompleteOrderUC` wired
+  alongside `CreateOrderUC`.
+- **`cmd/service/main.go`** — `foundationshutdown.Run` now receives three
+  concurrent `Service` implementations (`ORDERING-HTTP` +
+  `Subscribers["baskets"]` + `Subscribers["depot"]`), the widest application of
+  ADL 0012's multi-listener pattern in this system so far.
+
+### Issues Found & Resolved
+
+- **Dead-letter wildcard bug (`*` vs. `>`)** — see above. This is the second
+  time this exact class of NATS subject-matching bug has surfaced in this
+  project (the first being Phase 3's "Known Gap Found" against `ordering`'s own
+  stream), and this time it was actually fixed everywhere it existed, rather
+  than named and deferred again.
+- **`Scan` missing an `&`, and `sql.ErrNoRows` instead of `pgx.ErrNoRows`** —
+  both in the initial `FindByShoppingListID` draft, both caught in code review
+  before being exercised against real data, both fixed to match the conventions
+  already established by every other repository method in this codebase.
+- **Test fixtures using invented store/product IDs cannot seed a fully
+  orchestrated order.** `TestCompleteOrder_Execute_Succeeds` and
+  `TestCompleteOrder_Execute_IsIdempotentOnRepeatedShoppingListID` both need a
+  seed order whose `AddItem` call to `depot` actually succeeds — which requires
+  a store and product `depot`'s catalog cache genuinely recognizes, which in
+  turn requires those to have been created through the real, live `stores`
+  service and projected over NATS, not invented on the spot the way every other
+  fixture in this test file does. This is the identical gap Phase 4's summary
+  already named ("no application-layer test exercises \[a real catalog
+  dependency\]... deliberately left open") — Phase 5 is simply the first place a
+  test actually tripped over it directly rather than leaving it theoretical.
+
+### Known, Explicitly Accepted Gaps
+
+- **`CompleteOrder`'s success and idempotency paths are unit-tested only by
+  deferral, not by an automated test.** Both were instead verified live,
+  end-to-end, against the real containerized stack (`stores` → `baskets` →
+  `ordering` → `depot` → back to `ordering`), and both passed cleanly on the
+  first real run: `OrderReadied` published exactly once, `orders.status`
+  confirmed `readied` in Postgres, no retries or dead-lettering observed. The
+  automated coverage gap is deferred specifically to Phase 6, once `ordering`'s
+  own `connectapi` layer exists and a `storesclient`-style test seeding helper
+  (or an equivalent fixture strategy) can be built as part of a broader, more
+  comprehensive test pass — not deferred indefinitely.
+- **No guard against `MarkReadied` being called on an already-`canceled`
+  order.** `CompleteOrder.Execute` doesn't special-case
+  `ErrOrderAlreadyCanceled` the way it special-cases "already readied" — a
+  `ShoppingListCompleted` event arriving for a canceled order would hit the
+  hard-error/dead-letter path, same as an unresolved shopping list ID. This is
+  arguably the correct behavior (a canceled order should not silently become
+  readied), but it's untested and untestable today, since no `CancelOrder` use
+  case exists yet in this project. Named here explicitly so it's a known
+  consequence to revisit once Phase 6 builds `CancelOrder`, not a gap discovered
+  by surprise later.
+- **The same check-then-act race named in Phase 4** (no locking around a
+  correlation lookup followed by a separate mutation) applies here too:
+  `FindByShoppingListID` is a plain, non-locking read, and only the subsequent
+  `FindByIDForUpdate` call actually takes the row lock. Two genuinely concurrent
+  redeliveries of the same `ShoppingListCompleted` message could both resolve
+  the same order ID before either takes the lock — narrower than "every retry
+  duplicates," same as Phase 4's equivalent gap, and carried forward rather than
+  newly introduced.
+
+### State at End of Phase 5
+
+- `ordering` now runs three concurrent listeners (HTTP health endpoint,
+  `baskets`-stream subscriber, `depot`-stream subscriber) under one
+  `foundationshutdown.Run` call, per ADL 0012.
+- The full orchestration loop this project exists to build is now live and
+  proven end-to-end for the first time: a real `stores` product, added to a real
+  `baskets` basket, checked out, triggers `ordering` to create an `Order` and
+  synchronously drive `depot` to build a matching shopping list; completing that
+  shopping list in `depot` flows back through `ordering`'s second subscriber to
+  advance the same `Order` to `readied`.
+- No `connectapi`, no `orderingpb`, still no synchronous API surface for
+  `ordering` itself — `GetOrder`/`CancelOrder` remain unbuilt, and there is
+  still no way to query or cancel an order except by reading Postgres directly,
+  which is exactly what Phase 6 addresses.
+- Every dead-letter subject across `stores`, `depot`, `baskets`, and `ordering`
+  now uses the correct `>` wildcard — a cross-project fix applied this Phase
+  even though only `ordering`'s own gap was originally in scope for this
+  project.
+
+### Carried Into Phase 6
+
+Phase 6 builds `ordering`'s own ConnectRPC server per the original Phase Plan:
+`GetOrder` (a straightforward ADL 0008-compliant query path, structurally
+identical to `depot`/`baskets`' own `GetShoppingList`/`GetBasket`) and
+`CancelOrder`, which raises a genuine open design question this project hasn't
+answered yet — whether canceling an `Order` in `ordering` needs to reach into
+`depot` to also cancel its linked shopping list, or whether the two lifecycles
+are allowed to diverge. Once `connectapi` exists, this is also the point to
+build the `storesclient`-style test-seeding helper this Phase deferred, and to
+write the fuller, more comprehensive test pass this Phase's "Known, Explicitly
+Accepted Gaps" section named as pending — including, finally, real automated
+coverage for `CompleteOrder`'s success and idempotency paths, and a first real
+test of the already-canceled-order interaction with `ShoppingListCompleted` once
+`CancelOrder` gives us a way to produce that state at all.

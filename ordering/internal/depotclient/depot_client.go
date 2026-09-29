@@ -95,3 +95,24 @@ func (c *Client) GetShoppingList(ctx context.Context, shoppingListID string) (ma
 
 	return quantities, nil
 }
+
+// CancelShoppingList will contact the depot service via rpc and request a cancelation
+// of a ShoppingList via it's ID. It'll recieve the shopping list back in a canceled
+// state. It wraps the possible error with "%w" to perserve the *connnect.Error returned
+// as the caller will need to inspect teh error Code to determine what error has happened.
+func (c *Client) CancelShoppingList(ctx context.Context, shoppingListID string) error {
+
+	// create a new rpc Request for canceling a shopping list
+	req := connect.NewRequest(&depotpb.CancelShoppingListRequest{
+		ShoppingListId: shoppingListID,
+	})
+
+	// make the rpc call to the depot service sending the request; should return the
+	// should return the ShoppingList in a canceled status.
+	_, err := c.rpc.CancelShoppingList(ctx, req)
+	if err != nil {
+		return fmt.Errorf("canceling shopping list %q: %w", shoppingListID, err)
+	}
+
+	return nil
+}

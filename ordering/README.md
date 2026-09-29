@@ -1629,3 +1629,167 @@ fine because we don't need them for this phase.
 Give the build a run and let me know how it goes. Any questions on the two-step
 lookup or the `alreadyReadied` flag before we move on to Step 2, the real
 `FindByShoppingListID` query?
+
+## Phase 6
+
+**Phase 6 goal:** give `ordering` its own ConnectRPC surface — `GetOrder` and
+`CancelOrder` — following the exact same shape `depot`/`baskets` already
+established (`connectapi/server.go`, `order.go`, `proto.go`, `errors.go`, an
+`orderingpb/api.proto`, wired into `ordering.go` and `main.go`).
+
+Here's the Step breakdown I'd propose:
+
+**Step 1 — Design decision: what does `CancelOrder` actually do?** This is the
+one genuinely open question Phase 5 flagged, and it's worth settling before
+writing any code, the same way ADL 0016 settled the orchestration question
+before Phase 3 started. The core fork: does canceling an `Order` reach
+synchronously into `depot` to cancel the linked shopping list too, or are the
+two lifecycles allowed to diverge (an `ordering`-side cancellation that leaves
+`depot`'s shopping list to complete on its own)? I have a recommendation, but
+I'd rather walk through the tradeoff with you first since it's a real design
+call, not mechanical work — this'll be a discussion step, not a code step.
+
+**Step 2 — `orderingpb/api.proto`** Define `Order` (mirroring the domain struct:
+id, status, items, shopping_list_id), `GetOrderRequest/Response`,
+`CancelOrderRequest/Response`. You'll run `buf generate` locally same as before.
+
+**Step 3 — `connectapi` package** `server.go`, `order.go` (the two handlers),
+`proto.go` (`toProtoOrder`), `errors.go` (`mapError` for `ordering`'s own
+sentinel errors — some already exist like
+`ErrOrderAlreadyReadied`/`ErrOrderAlreadyCanceled`).
+
+**Step 4 — `CancelOrder` use case** Shape depends on Step 1's decision — either
+a straightforward `application.CancelOrder` calling `order.Cancel()`, or one
+that also calls into `depotClient` first.
+
+**Step 5 — Wiring** `ordering.go`'s `Module` gains
+`GetOrderUC`/`CancelOrderUC`/`ConnectServer`; `main.go` registers the Connect
+handler path, same pattern as `stores`/`depot`/`baskets`.
+
+**Step 6 — Live verification** A curl script (`ordering-http-connect.sh`-style)
+exercising the full loop end-to-end: checkout → order created → shopping list
+orchestrated → `GetOrder` mid-flight → complete → `GetOrder` shows `readied` → a
+fresh order → `CancelOrder` → verify terminal-state guards
+(cancel-after-readied, cancel-after-already-canceled, get/cancel against unknown
+IDs).
+
+This also finally gives us a live way to test the gap Phase 5 named
+(`ShoppingListCompleted` arriving for an already-canceled order) if you want to
+fold that into Step 6.
+
+### Step 1
+
+Good — let's dig into Step 1.
+
+Here's the fork, stated plainly: when someone calls `ordering.CancelOrder`,
+should that handler _also_ place a synchronous RPC call to
+`depot.CancelShoppingList`, or should it only touch `ordering`'s own `Order` row
+and let `depot`'s shopping list keep going on its own?
+
+Let me lay out what I see as the real considerations, then tell you where I'd
+lean.
+
+**The case for reaching into `depot` (symmetric with `CreateOrder`'s
+orchestration):** `ordering` already treats itself as the orchestrator — Design
+A in ADL 0016 was explicitly "`ordering` drives `depot`, not the other way
+around." If `Order` can command `depot` to _build_ a shopping list, it's at
+least consistent for it to also command `depot` to _tear one down_ on
+cancellation. Without this, you'd get a real, visible inconsistency: a customer
+cancels their order in `ordering`, but somewhere in a warehouse, `depot`'s
+shopping list is still `active`, someone finishes shopping for it, publishes
+`ShoppingListCompleted`, and `ordering`'s `depot` subscriber picks that up and
+tries to call `MarkReadied()` on an order that's already `canceled`. That's
+exactly the untested interaction Phase 5's gap section named.
+
+**The case against it:** it's a new failure mode, and a nastier one than
+`CreateOrder`'s. `CreateOrder`'s orchestration only ever needs to succeed
+_eventually_ — retries and idempotent calls handle that fine, nothing else is
+racing against it. `CancelOrder` is different: it's racing against `depot`'s own
+independent state machine. By the time `ordering.CancelOrder` fires its RPC, the
+shopping list might already be `completed` in `depot` (someone finished shopping
+before the cancellation reached it), and `depot.CancelShoppingList` will
+legitimately reject that with `ErrShoppingListAlreadyCompleted`. So `ordering`
+would need to treat that specific rejection as an acceptable, expected outcome
+("we tried to cancel, but it already finished — that's fine, not an error")
+rather than a failure to propagate to the caller. That's real branching logic,
+not a mechanical RPC call.
+
+**Where I'd lean, and why:** call into `depot`, but make the failure handling
+narrow and deliberate rather than a blanket "ignore any depot error."
+Specifically: call `CancelShoppingList`, and treat
+`ErrShoppingListAlreadyCompleted`/`CodeInvalidArgument`-with-that-specific-cause
+as a benign no-op (log it, proceed with canceling the `Order` anyway), but let
+any other `depot` failure (unreachable, `CodeInternal`, etc.) propagate as a
+real error — same "distinguish rather than swallow" discipline this project's
+used everywhere else (ADL 0007's return-the-error-with-the-aggregate pattern,
+`mapError`'s explicit code mapping).
+
+One more wrinkle this surfaces: what should happen if `Order` is already
+`readied`? `Cancel()` already guards against that (`ErrOrderAlreadyReadied`) —
+meaning if `depot` already completed the list and `ordering` already advanced to
+`readied`, `CancelOrder` never even reaches the `depot` call at all, since the
+domain guard fires first. So the race window is narrower than it might first
+sound: it's specifically the gap between "`depot` completes the list" and
+"`ordering`'s subscriber processes `ShoppingListCompleted`" — not the whole
+order lifecycle.
+
+What's your read — does reaching into `depot` with that narrow exception feel
+right to you, or would you rather keep `CancelOrder` local to `ordering` and
+treat the divergent-state case as an accepted, named gap (the way several other
+things in this project have been)?
+
+Good — that's the design we'll build. One quick note before I write anything:
+the way we'll actually detect "the shopping list was already in a terminal
+state" without violating ADL 0004 (no importing `depot`'s internal error types)
+is by checking the returned `connect.Error`'s **code**, not its message text.
+Looking at `depot`'s own `mapError`, both `ErrShoppingListAlreadyCompleted` and
+`ErrShoppingListAlreadyCanceled` map to `CodeInvalidArgument` — and those are
+the only two ways `CancelShoppingList` can reject a request that already has a
+valid ID. So the rule becomes: `CodeInvalidArgument` from that specific call →
+benign, the list already reached a terminal state, proceed with canceling the
+`Order` anyway. Anything else (`CodeNotFound`, `CodeInternal`, network failure)
+→ a real error, propagate it. That keeps the distinction code-based and
+contract-safe rather than parsing error strings.
+
+## Step 2
+
+Here's Step 2 — extending the `DepotClient` port and its concrete
+implementation.
+
+First, the interface gets one more method, in the same style as its three
+siblings:
+
+```go
+// ordering/internal/domain/depot_client.go
+```
+
+And the thin implementation, added to `depotclient.Client` alongside
+`AddItem`/`GetShoppingList`:
+
+```go
+// ordering/internal/depotclient/client.go — add this method
+```
+
+What's happening here: this method is deliberately dumb. It doesn't inspect the
+error at all — it wraps whatever `connect` gives it with `%w` and hands it back.
+That `%w` (not `%v`) is the one detail that matters for Step 3 to work: it
+preserves the underlying `*connect.Error` inside the wrapped error, so the
+caller can later use `errors.As` to pull the original `connect.Error` back out
+and inspect its `.Code()` — the judgment call we talked about lives entirely in
+`application.CancelOrder`, not here. This keeps all four `DepotClient` methods
+symmetric: every one of them is "make the call, wrap the error, return" — no
+branching, no knowledge of what any particular error code _means_ to the caller.
+That knowledge belongs to whoever has the context to decide it's benign, which
+is `CancelOrder`, not a generic RPC client.
+
+One thing to double check on your end before we move on: does `depot/depotpb`
+already export a `CancelShoppingListRequest` type with a `ShoppingListId` field?
+Looking at the `depot-api.proto`/`depot-api.pb.go` you gave me earlier,
+`CancelShoppingListRequest` does exist with exactly that field — so this should
+compile against what's already generated for `depot`, no proto regeneration
+needed on `depot`'s side for this step.
+
+Go ahead and add these two changes. Once you've confirmed it builds
+(`go build ./ordering/...` or however you usually check), let me know and we'll
+move to Step 3: the `application.CancelOrder` use case itself, where the actual
+`connect.Code` inspection happens.

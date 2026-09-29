@@ -3,14 +3,17 @@ package events
 
 // OrderingStreamName defines the name of the stream the ordering pacakge owns
 // BasketsStreamName is the stream "ordering" will consume
+// DepotStreamName is another stream "ordering" will consume
 const (
 	OrderingStreamName = "ordering"
 	BasketsStreamName  = "baskets"
+	DepotStreamName    = "depot"
 )
 
 // OrderingStreamSubjects defines all the subjects under which an event
 // can be published
+// * matches exactly one token between dots, while > matches one-or-more trailing tokens.
 var OrderingStreamSubjects = []string{
 	"ordering.order.*",
-	"ordering.deadletter.*",
+	"ordering.deadletter.>",
 }

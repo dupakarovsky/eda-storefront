@@ -10,6 +10,7 @@ import (
 	foundationpostgres "github.com/dupakarovsky/eda-storefront/foundation/postgres"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/application"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/baskets"
+	"github.com/dupakarovsky/eda-storefront/ordering/internal/depot"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/depotclient"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/domain"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/events"
@@ -28,13 +29,14 @@ type Module struct {
 	NC   *nats.Conn
 	JS   jetstream.JetStream
 
-	Publisher  *foundationnats.Publisher
-	Subscriber *foundationnats.Subscriber
+	Publisher   *foundationnats.Publisher
+	Subscribers map[string]*foundationnats.Subscriber
 
 	OrderRepo   domain.OrderRepository
 	DepotClient domain.DepotClient
 
-	CreateOrderUC *application.CreateOrder
+	CreateOrderUC   *application.CreateOrder
+	CompleteOrderUC *application.CompleteOrder
 }
 
 func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) (*Module, error) {
@@ -118,7 +120,7 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	orderRepo := postgres.NewOrderRepository(pool)
 
 	// -------------------------
-	// Intialize the repository
+	// Intialize the client
 	// -------------------------
 	// depotClient lets "ordering" synchronously orchestrate shopping list
 	// creation on "depot" once an Order is created
@@ -130,11 +132,12 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	//needs to happen here as the Subscriber needs the createOrderUC before we
 	//handle it to the RPC server
 	createOrderUC := application.NewCreateOrder(orderRepo, depotClient, publisher, logger)
+	completeOrderUC := application.NewCompleteOrder(orderRepo, publisher, logger)
 
 	// -------------------------------------------------
-	// Intialize the subscriber to the "baskets" stream
+	// Intialize the basketsSubscriber to the "baskets" stream
 	// -------------------------------------------------
-	subscriber := foundationnats.NewSubscriber(
+	basketsSubscriber := foundationnats.NewSubscriber(
 		"ORDERING-BASKETS-CHECKOUT",
 		js,
 		events.BasketsStreamName,
@@ -144,18 +147,35 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		foundationnats.PublishDeadLetter(publisher, "ordering", logger),
 	)
 
+	// -------------------------------------------------
+	// Intialize the subscriber to the "depto" stream
+	// -------------------------------------------------
+	depotSubscriber := foundationnats.NewSubscriber(
+		"ORDERING-DEPOT-COMPLETE-SHOPPING-LIST",
+		js,
+		events.DepotStreamName,
+		logger,
+		foundationnats.StandardConsumerConfig("ordering-depot-complete-shopping-list"),
+		depot.Handler(completeOrderUC, logger),
+		foundationnats.PublishDeadLetter(publisher, "ordering", logger),
+	)
+
 	return &Module{
-		Logger:     logger,
-		Pool:       pool,
-		NC:         nc,
-		JS:         js,
-		Publisher:  publisher,
-		Subscriber: subscriber,
+		Logger:    logger,
+		Pool:      pool,
+		NC:        nc,
+		JS:        js,
+		Publisher: publisher,
+		Subscribers: map[string]*foundationnats.Subscriber{
+			"baskets": basketsSubscriber,
+			"depot":   depotSubscriber,
+		},
 
 		OrderRepo:   orderRepo,
 		DepotClient: depotClient,
 
-		CreateOrderUC: createOrderUC,
+		CreateOrderUC:   createOrderUC,
+		CompleteOrderUC: completeOrderUC,
 	}, nil
 }
 

@@ -1,35 +1,11 @@
 package application_test
 
 import (
-	"context"
 	"errors"
 	"testing"
 
-	"github.com/dupakarovsky/eda-storefront/ordering"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/domain"
-	"github.com/dupakarovsky/eda-storefront/ordering/internal/events"
 )
-
-// streamMessageCount will access the "ordering" jeststream and return it's Messages.
-// It'll be neeeded to verify if one of the test cases.
-func streamMessageCount(t *testing.T, mod *ordering.Module, ctx context.Context) uint64 {
-	t.Helper()
-
-	// access the ordering stream
-	stream, err := mod.JS.Stream(ctx, events.OrderingStreamName)
-	if err != nil {
-		t.Fatalf("failed to get stream: %v", err)
-	}
-
-	// get info object from the stream
-	info, err := stream.Info(ctx)
-	if err != nil {
-		t.Fatalf("failed to get stream info: %v", err)
-	}
-
-	// return the number of messages from the stream
-	return info.State.Msgs
-}
 
 func TestCreateOrder_Execute_Succeeds(t *testing.T) {
 
@@ -40,7 +16,7 @@ func TestCreateOrder_Execute_Succeeds(t *testing.T) {
 	// create an unique ID for this order
 	id := uniqueID("create-order")
 
-	// defina an slice of Items for the Order to contain
+	// define an slice of Items for the Order to contain
 	items := []domain.Item{
 		{ProductID: uniqueID("create-order-prod"), StoreID: uniqueID("create-order-store"), Quantity: 2},
 	}
@@ -115,7 +91,7 @@ func TestCreateOrder_Execute_IsIdempotentOnRepeatedID(t *testing.T) {
 	// check the number of messages before publication of the event
 	before := streamMessageCount(t, mod, ctx)
 
-	// first call to CreteOrder
+	// first call to CreateOrder
 	first, err := mod.CreateOrderUC.Execute(ctx, id, items)
 	if err != nil {
 		t.Fatalf("expected first Execute to succeed, got error: %v", err)
@@ -134,11 +110,11 @@ func TestCreateOrder_Execute_IsIdempotentOnRepeatedID(t *testing.T) {
 	}
 
 	// since we're calling Execute again with the same ID, the handler should NOT
-	// have created a new Order. So the number of messages before and after should
-	// still be the same
+	// have created a new Order. So the number of messages published to the
+	// stream (before and after) should still be the same.
 	// ---------------------------------------------------------------------------
 
-	// check the number of messages after the second invocation; expected to be equal
+	// check the number of messages after the second invocation; expected them to be equal
 	afterSecond := streamMessageCount(t, mod, ctx)
 	if afterSecond != afterFirst {
 		t.Errorf("expected no new message on repeated Execute, got %d new messages", afterSecond-afterFirst)

@@ -85,8 +85,8 @@ func main() {
 	// intializes a new httpService for ordering
 	orderingHTTPService := foundationshutdown.NewHTTPService("ORDERING-HTTP", logger, srv)
 
-	// start the services (http + nats subscriber) and shutdown monitoring
-	if err := foundationshutdown.Run(logger, cfg.Server.ShutdownTimeout, orderingHTTPService, mod.Subscriber); err != nil {
+	// start the services (http + nats subscribers) and shutdown monitoring
+	if err := foundationshutdown.Run(logger, cfg.Server.ShutdownTimeout, orderingHTTPService, mod.Subscribers["baskets"], mod.Subscribers["depot"]); err != nil {
 		logger.Error("server exited with error", "error", err)
 	}
 }

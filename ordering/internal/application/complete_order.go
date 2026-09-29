@@ -45,7 +45,7 @@ func (uc *CompleteOrder) Execute(ctx context.Context, shoppingListID string) (*d
 		// locate an order associated with this ID
 		foundOrder, err := uc.orderRepo.FindByShoppingListID(txCtx, shoppingListID)
 		if err != nil {
-			return fmt.Errorf("locking order: %w", err)
+			return fmt.Errorf("locating order: %w", err)
 		}
 
 		// retrieve the record from the orders database associated with this shoppingListID

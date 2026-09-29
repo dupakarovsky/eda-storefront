@@ -93,8 +93,44 @@ func (r *OrderRepository) FindByIDForUpdate(ctx context.Context, id string) (*do
 	return r.find(ctx, executorFrom(ctx, r.db), id, true)
 }
 
+// FindByShoppingListID will return an order associated with an shopping list id. This method
+// does NOT need to run inside a transaciton block.
 func (r *OrderRepository) FindByShoppingListID(ctx context.Context, shoppingListID string) (*domain.Order, error) {
-	return nil, errors.New("FindByShoppingListID: not implemented")
+
+	// select statement for the record
+	selectStmt := `
+	SELECT id,status
+	FROM orders where shopping_list_id = $1;
+	`
+
+	// retrieve the transaciton object from the context
+	exec := executorFrom(ctx, r.db)
+
+	// variables to received data from the database columns
+	var (
+		id     string
+		status string
+	)
+
+	// execute the query
+	err := exec.QueryRow(ctx, selectStmt, shoppingListID).Scan(&id, &status)
+	if err != nil {
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil, domain.ErrOrderNotFound
+		default:
+			return nil, fmt.Errorf("finding order by shopping list id: %w", err)
+		}
+	}
+
+	// load this order's items
+	items, err := r.loadItems(ctx, exec, id)
+	if err != nil {
+		return nil, fmt.Errorf("loading order items: %w", err)
+	}
+
+	// return the reconstructed domain.Order
+	return domain.ReconstituteOrder(id, domain.OrderStatus(status), items, shoppingListID), nil
 }
 
 //-------------------------------------------------------------------------------

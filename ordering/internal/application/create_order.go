@@ -37,7 +37,6 @@ func (uc *CreateOrder) Execute(ctx context.Context, id string, items []domain.It
 	// first check if there's already an Order associated with with this ID.
 	existing, err := uc.orderRepo.FindByID(ctx, id)
 	// If there is, than there are two possible outcomes:
-
 	if nil == err {
 		// A) a shopping list is already linked to the order:
 		// it was created successfuly in `depot` and all Items were added successfuly.
