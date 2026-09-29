@@ -1,0 +1,47 @@
+// ordering/orderingpb/api.proto
+syntax = "proto3";
+
+package ordering.v1;
+
+option go_package = "github.com/dupakarovsky/eda-storefront/ordering/orderingpb;orderingpb";
+
+
+// ==== Data types ============================================================
+
+message Item {
+  string product_id = 1;
+  string store_id = 2;
+  int32 quantity = 3;
+}
+
+message Order {
+  string id = 1;
+  string status = 2;
+  repeated Item items = 3;
+  string shopping_list_id = 4;
+}
+
+// ==== Messages ============================================================
+
+// === GetOrder ===
+message GetOrderRequest {
+  string order_id = 1;
+}
+message GetOrderResponse {
+  Order order = 1;
+}
+
+// === CancelOrder ===
+message CancelOrderRequest {
+  string order_id = 1;
+}
+message CancelOrderResponse {
+  Order order = 1;
+}
+
+// ==== Services ============================================================
+
+service OrderingService {
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+}

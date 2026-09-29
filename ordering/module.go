@@ -10,6 +10,7 @@ import (
 	foundationpostgres "github.com/dupakarovsky/eda-storefront/foundation/postgres"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/application"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/baskets"
+	"github.com/dupakarovsky/eda-storefront/ordering/internal/connectapi"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/depot"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/depotclient"
 	"github.com/dupakarovsky/eda-storefront/ordering/internal/domain"
@@ -37,6 +38,9 @@ type Module struct {
 
 	CreateOrderUC   *application.CreateOrder
 	CompleteOrderUC *application.CompleteOrder
+	CancelOrderUC   *application.CancelOrder
+
+	ConnectServer *connectapi.Server
 }
 
 func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) (*Module, error) {
@@ -133,6 +137,8 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	//handle it to the RPC server
 	createOrderUC := application.NewCreateOrder(orderRepo, depotClient, publisher, logger)
 	completeOrderUC := application.NewCompleteOrder(orderRepo, publisher, logger)
+	cancelOrderUC := application.NewCancelOrder(orderRepo, depotClient, publisher, logger)
+	getOrderUC := application.NewGetOrder(orderRepo)
 
 	// -------------------------------------------------
 	// Intialize the basketsSubscriber to the "baskets" stream
@@ -160,6 +166,12 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		foundationnats.PublishDeadLetter(publisher, "ordering", logger),
 	)
 
+	//============================================================================
+	// CONNECTRPC SERVER INITIALIZATION
+	//============================================================================
+
+	connectServer := connectapi.NewServer(getOrderUC, cancelOrderUC)
+
 	return &Module{
 		Logger:    logger,
 		Pool:      pool,
@@ -176,6 +188,9 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 
 		CreateOrderUC:   createOrderUC,
 		CompleteOrderUC: completeOrderUC,
+		CancelOrderUC:   cancelOrderUC,
+
+		ConnectServer: connectServer,
 	}, nil
 }
 

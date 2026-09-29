@@ -11,6 +11,7 @@ import (
 	foundationlogging "github.com/dupakarovsky/eda-storefront/foundation/logging"
 	foundationshutdown "github.com/dupakarovsky/eda-storefront/foundation/shutdown"
 	"github.com/dupakarovsky/eda-storefront/ordering"
+	"github.com/dupakarovsky/eda-storefront/ordering/orderingpb/orderingpbconnect"
 )
 
 func main() {
@@ -63,8 +64,11 @@ func main() {
 		foundationhttp.TimeoutMiddleware(cfg.Server.RequestTimeout),
 	)
 
-	// attach the /health endpoint
+	path, connectHandler := orderingpbconnect.NewOrderingServiceHandler(mod.ConnectServer)
+
+	// attach the /health and rpc routes (/ordering.v1.OrderingService)
 	router.Handle("GET /health", healthHTTPHandler(mod))
+	router.Handle(path, connectHandler.ServeHTTP)
 
 	// construct the hander to bind the routes
 	handler := router.Build()

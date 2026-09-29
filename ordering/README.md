@@ -1793,3 +1793,269 @@ Go ahead and add these two changes. Once you've confirmed it builds
 (`go build ./ordering/...` or however you usually check), let me know and we'll
 move to Step 3: the `application.CancelOrder` use case itself, where the actual
 `connect.Code` inspection happens.
+
+### Step 3
+
+Here's Step 3 — wait, let me keep the numbering loose the way this session's
+already drifted (DepotClient extension, now the use case) rather than force it
+back to the original Step 2/3/4 labels. This is `application.CancelOrder`.
+
+```go
+// ordering/internal/application/cancel_order.go
+
+```
+
+What's happening here, and a few things worth flagging:
+
+The `WithLock`/`FindByIDForUpdate` pair here is actually the _first_
+correctly-scoped use of row locking in `ordering`'s use cases. Both
+`CreateOrder` and `CompleteOrder` have a known, named gap (Phase 4/5's
+"check-then-act race") because they each need a non-locking lookup first
+(`FindByID`, `FindByShoppingListID`) before they can even get an ID to lock on.
+`CancelOrder` doesn't have that problem — it's handed the order ID directly by
+the caller, so it can go straight into `WithLock` → `FindByIDForUpdate` with no
+unlocked window beforehand. Worth noting as a small positive, not something to
+fix elsewhere right now.
+
+The `depot` call sits deliberately _outside_ the transaction, using `ctx` rather
+than `txCtx` — same placement `publishDomainEvent` already uses everywhere else
+in this codebase, for the same reason: the local `Order` row is already durably
+committed by this point, so there's nothing left to roll back regardless of what
+happens next.
+
+The `errors.As(err, &connectErr)` line is the payoff from keeping
+`depotclient.Client.CancelShoppingList` a thin `%w`-wrapping passthrough.
+`connect.Error` is a concrete type connect-go returns from any RPC call, and
+wrapping with `%w` at each layer preserves it deep enough in the chain for
+`errors.As` to find it. If the code is `CodeInvalidArgument`, we treat it as
+"the shopping list already reached a terminal state on its own" and let
+cancellation succeed anyway. Anything else — the depot service being
+unreachable, a `CodeInternal`, `CodeNotFound` on the shopping list ID somehow —
+falls through to the `else` and gets returned as a real error, with `order`
+still handed back non-nil, matching this whole codebase's established pattern of
+"here's the aggregate, and here's what didn't finish."
+
+One thing I did _not_ add: a distinction between `depot` returning "already
+completed" versus "already canceled" — both are `CodeInvalidArgument` from
+`depot`'s own `mapError`, and for our purposes here they mean the same thing
+("nothing left for you to cancel"), so we don't need to tell them apart.
+
+This use case has no wiring yet (no `Module` field, nothing calling `Execute`) —
+same as Phase 1's domain/postgres layers, it should just compile standalone
+right now. Go ahead and run `go build ./ordering/...` and let me know if it's
+clean. Any questions on the locking placement or the error-code check before we
+move to the proto definitions?
+
+### Step 4
+
+Now the proto definitions — this is the first proto file `ordering` has needed,
+since everything built so far consumed other services' RPCs rather than exposing
+its own.
+
+```protobuf
+// ordering/orderingpb/api.proto
+syntax = "proto3";
+
+package ordering.v1;
+
+option go_package = "github.com/dupakarovsky/eda-storefront/ordering/orderingpb;orderingpb";
+
+
+// ==== Data types ============================================================
+
+message Item {
+  string product_id = 1;
+  string store_id = 2;
+  int32 quantity = 3;
+}
+
+message Order {
+  string id = 1;
+  string status = 2;
+  repeated Item items = 3;
+  string shopping_list_id = 4;
+}
+
+// ==== Messages ============================================================
+
+// === GetOrder ===
+message GetOrderRequest {
+  string order_id = 1;
+}
+message GetOrderResponse {
+  Order order = 1;
+}
+
+// === CancelOrder ===
+message CancelOrderRequest {
+  string order_id = 1;
+}
+message CancelOrderResponse {
+  Order order = 1;
+}
+
+// ==== Services ============================================================
+
+service OrderingService {
+  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);
+  rpc CancelOrder(CancelOrderRequest) returns (CancelOrderResponse);
+}
+```
+
+A few choices worth explaining:
+
+`Item` here carries `store_id`, unlike `depot`'s wire-format `Item` (which only
+has `product_id`/`quantity`, since `depot` groups by `Stop` instead). This
+mirrors the domain: `ordering.internal.domain.Item` already carries `StoreID`
+for exactly the reason journey_progress.md's Phase 1 notes call out — `ordering`
+is the one service that needs to hand `store_id` to `depot.AddItem` per unit, so
+it has to own that field itself rather than deriving it from a grouping
+structure.
+
+`Order.items` is a flat `repeated Item`, matching `domain.Order.Items []Item`
+directly — no `Stops`-style grouping the way `depot`'s wire format has, because
+`ordering` never needed that grouping internally.
+
+Only two RPCs on the service, matching what Phase 6 actually needs — no
+`CreateOrder` exposed here, since order creation only ever happens via the
+`baskets` subscriber, never as a direct synchronous call from an external
+caller. That's a deliberate asymmetry worth noticing: `depot`/`baskets`/`stores`
+all exposed full CRUD-shaped RPC surfaces because they're driven directly by
+callers, but `ordering`'s creation path is event-driven only — its synchronous
+surface exists purely for querying and canceling something that already exists.
+
+Go ahead and drop this at `ordering/orderingpb/api.proto` and run `buf generate`
+the way you did for `depot`/`baskets`. Once that's produced `api.pb.go` and
+`api.connect.go` under `orderingpb`/`orderingpb/orderingpbconnect`, let me know
+and we'll move to the `connectapi` package — `proto.go`, `errors.go`,
+`server.go`, and `order.go` — which is where those generated types actually get
+used.
+
+### Step 5
+
+Before the `connectapi` package, we're missing one small piece: a `GetOrder`
+query use case. Everything built so far either mutates
+(`CreateOrder`/`CompleteOrder`/`CancelOrder`) or reads via a repository method
+directly inside another use case — there's no standalone read-only use case yet,
+the kind ADL 0008 requires sitting between `connectapi` and the repository even
+for a plain lookup.
+
+```go
+// ordering/internal/application/get_order.go
+```
+
+This is deliberately as thin as `depot.GetShoppingList`/`baskets.GetBasket` — no
+logic beyond the repository call, per ADL 0008's own reasoning: the point isn't
+that this use case does anything yet, it's that `connectapi.Server` is never
+allowed to call `OrderRepository` directly, read or write, so every RPC needs a
+real `application` type standing between them regardless of how little work it
+does today.
+
+Now the `connectapi` package — four files, all structurally identical to
+`depot`'s equivalents.
+
+```go
+// ordering/internal/connectapi/proto.go
+```
+
+```go
+// ordering/internal/connectapi/errors.go
+```
+
+```go
+// ordering/internal/connectapi/server.go
+```
+
+```go
+// ordering/internal/connectapi/order.go
+```
+
+A couple of things worth flagging, since this is `ordering`'s first time on this
+side of `mapError`:
+
+`errors.go`'s error list only maps `Order`'s own domain sentinels — it doesn't
+need to know anything about `depot`'s errors, even though `CancelOrder`'s use
+case now talks to `depot`. That's because `CancelOrder.Execute` already resolved
+the `depot`-side ambiguity itself (the `connect.CodeInvalidArgument` check we
+wrote last step) before returning — by the time an error reaches `mapError`
+here, it's either a genuine `ordering`-domain error or an opaque
+`depot`-communication failure that correctly falls through to the
+`default: CodeInternal` case. `mapError` staying ignorant of `depot`'s specific
+errors is the payoff of having done that filtering one layer down, in
+`application`, rather than pushing it all the way up to the API boundary.
+
+Notice `ErrOrderNotFound` is the _only_ thing mapped to `CodeNotFound` here —
+unlike `depot`'s `mapError`, which has two sentinels sharing that code
+(`ErrStoreNotFound`, `ErrProductNotFound`). `ordering` only has one aggregate
+exposed through this API, so there's only one way to get a 404.
+
+Go ahead and try `go build ./ordering/...` — this should compile clean against
+what `buf generate` produced, but this is the first real point where a mismatch
+between the proto field names I guessed (`OrderId`, `ShoppingListId`, etc.) and
+what `buf` actually generated would surface. Let me know what happens.
+
+### Step 6
+
+Now we wire this into `ordering.go` (the `Module`) and `cmd/service/main.go` —
+the same two-file pattern every prior service used (see
+`stores-module.go`/`stores-main.go`, `depot-module.go`/`depot-main.go`).
+
+```go
+// ordering/ordering.go — add these imports
+```
+
+```go
+// ordering/ordering.go — Module struct gains these fields
+```
+
+```go
+// ordering/ordering.go — inside New, after createOrderUC/completeOrderUC are constructed
+```
+
+```go
+// ordering/ordering.go — the returned &Module{...} literal gains these fields
+```
+
+What's happening here: this follows `depot.go`'s exact construction order —
+build every use case first, then hand the ones the RPC layer needs into
+`connectapi.NewServer`, then place everything into the `Module` literal at the
+end. `cancelOrderUC` needs `depotClient` and `publisher`/`logger` (matching its
+constructor signature from two steps ago), while `getOrderUC` only needs
+`orderRepo`, same asymmetry `depot`'s own `getStoresUC`/mutating-use-case split
+already has.
+
+Now `main.go`:
+
+```go
+// ordering/cmd/service/main.go — add this import
+```
+
+```go
+// ordering/cmd/service/main.go — after
+// mod, err := ordering.New(...) and before router.Use(...)
+```
+
+```go
+// ordering/cmd/service/main.go
+//replace the existing router.Handle("GET /health", ...) line with both routes
+```
+
+One thing to double check as you place that: looking at your current
+`ordering-main.go`, `router.Handle("GET /health", ...)` is called _before_
+`handler := router.Build()`, same as every other service's `main.go` — make sure
+the new `router.Handle(path, connectHandler.ServeHTTP)` line goes in that same
+block, before `Build()` is called, not after. `stores-main.go` and
+`depot-main.go` both register their Connect handler path right alongside the
+health route for exactly this reason — `Build()` finalizes the mux, so anything
+registered after it is silently never reachable.
+
+Also worth a quick sanity check on your end: does `docker-compose.yaml`
+currently publish a host port for `ordering` (like `8080`→stores,
+`8081`→baskets, `8082`→depot)? I don't see one in the compose file you gave me —
+if it's still missing, we'll need to add one before the curl verification step,
+something like `127.0.0.1:8083:8080` matching the `ORDERING-HTTP` service name
+already used in your shutdown wiring.
+
+Go ahead and make these changes, run `go build ./ordering/...`, and let me know
+how it goes — and whether `ordering` already has a compose port mapping or if we
+need to add one.
