@@ -8,4 +8,4 @@ plugins:
       opt: paths=source_relative
 
 # paths=source_relative tells protoc-gen-go to put each generated go file next
-# ot it's source .proto file
+# to it's source .proto file

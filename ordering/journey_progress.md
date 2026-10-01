@@ -813,3 +813,178 @@ Accepted Gaps" section named as pending — including, finally, real automated
 coverage for `CompleteOrder`'s success and idempotency paths, and a first real
 test of the already-canceled-order interaction with `ShoppingListCompleted` once
 `CancelOrder` gives us a way to produce that state at all.
+
+## Phase 6 Summary — COMPLETE
+
+**Status:** Complete
+
+### What Was Built
+
+`ordering` gained its first synchronous ConnectRPC surface — `GetOrder` and
+`CancelOrder` — closing the gap Phase 5 named ("no way to query or cancel an
+order except by reading Postgres directly").
+
+- **`internal/domain/depot_client.go`** — `DepotClient` gained
+  `CancelShoppingList`, following the interface's existing convention.
+- **`internal/depotclient/client.go`** — `CancelShoppingList` implemented as a
+  thin, error-transparent wrapper (matching `AddItem`'s shape), wrapping the
+  underlying `connect.Error` with `%w` specifically so its code remains
+  inspectable one layer up — the judgment call about what a given failure
+  _means_ was deliberately kept out of the client and placed in `application`,
+  where the context to make that call actually exists.
+- **`internal/application/cancel_order.go`** (`CancelOrder` use case) — locks
+  and cancels the `Order` first, then calls `depot.CancelShoppingList` outside
+  the transaction (same placement convention as `publishDomainEvent` everywhere
+  else in this codebase). A `connect.CodeInvalidArgument` response from that
+  call is treated as benign (the shopping list already reached a terminal state
+  on its own — completed or canceled — before `ordering`'s cancellation reached
+  it) via `errors.As` against the wrapped `*connect.Error`; any other code
+  (unreachable service, `CodeInternal`, etc.) propagates as a real error. This
+  is `ordering`'s first use case where the entire lock-then-mutate sequence has
+  no unlocked window beforehand — unlike `CreateOrder`/`CompleteOrder`, which
+  both still carry the check-then-act race named in Phases 4/5, `CancelOrder`
+  receives its order ID directly from the caller and goes straight into
+  `WithLock`.
+- **`internal/application/get_order.go`** (`GetOrder` use case) — as thin as
+  `depot.GetShoppingList`/`baskets.GetBasket`, per ADL 0008: no logic beyond the
+  repository call, existing purely to keep `connectapi.Server` from ever calling
+  a repository directly.
+- **`orderingpb/`** — `ordering`'s first `.proto` file (`Order`, `Item`,
+  `GetOrderRequest/Response`, `CancelOrderRequest/Response`, `OrderingService`).
+  `Order.items` stays a flat `repeated Item` (matching `domain.Order.Items`
+  directly), unlike `depot`'s `Stops`-grouped wire format, since `ordering`
+  never needed that grouping internally. Only two RPCs exposed — no
+  `CreateOrder` — since order creation is event-driven only, never a direct
+  synchronous call.
+- **`internal/connectapi/`** (`server.go`, `order.go`, `proto.go`, `errors.go`)
+  — structurally identical to `depot`'s/`baskets`' equivalents. `mapError` here
+  only needs to know about `ordering`'s own domain sentinels, not `depot`'s —
+  because `CancelOrder.Execute` already resolved the `depot`-side ambiguity
+  itself before returning, so nothing depot-specific ever reaches this layer.
+- **`ordering.go`/`cmd/service/main.go`** — `Module` gained
+  `GetOrderUC`/`CancelOrderUC`/`ConnectServer`; `main.go` registers the Connect
+  handler path alongside the existing health route, same pattern as every prior
+  service.
+- **`ordering-http-connect-2.sh`** — a full end-to-end curl script covering the
+  entire order lifecycle from checkout through `readied`, a
+  cancel-while-still-`created` path (proving the `depot` call actually fires),
+  and every guard condition (cancel-after-readied,
+  cancel-after-already-canceled, get/cancel against unknown IDs).
+
+### Issues Found & Resolved
+
+- **Proto namespace collision (`docs/adl/0017`).** `ordering` was the first
+  service to link a second service's generated protobuf package into its own
+  binary (`depotclient` importing `depot/depotpb`, alongside `ordering`'s own
+  `orderingpb`), which immediately panicked at startup:
+  `proto: file "api.proto" is already registered`. Root cause: every service's
+  `buf.yaml` module root was its own `<service>pb/` directory, and every
+  service's source file was named identically (`api.proto`) — so two files
+  registered under the exact same key the moment they shared a process. Fixed by
+  renaming every service's proto source to `<service>.proto` (`stores.proto`,
+  `depot.proto`, `baskets.proto`, `ordering.proto`), applied across all four
+  services even though only `ordering`+`depot` were actually colliding yet,
+  since the same fix would be needed the instant any other service pair linked
+  packages the same way.
+- **Same-request self-deadlock in `CancelOrder` (the actual cause of a
+  reproducible 12-second timeout).** `CancelOrder`'s `Save` call inside its
+  `WithLock` callback used the outer `ctx` instead of the transaction-scoped
+  `txCtx`. `executorFrom` correctly found no transaction on `ctx` and fell back
+  to the bare pool, so `Save` ran on a _second_ pooled connection while the
+  first connection (still inside the callback) held an exclusive row lock on the
+  same `orders` row via `FindByIDForUpdate` — two connections from the same
+  logical request deadlocked against each other, invisible to
+  `pg_stat_activity`/`pg_locks` inspection after the fact because both sides
+  belonged to the same request and resolved themselves the moment the client's
+  own request timeout fired. Diagnosed by ruling out, in order: a stale
+  interactive `psql` transaction, a genuine cross-session lock wait (`pg_locks`
+  join came back empty), and a Postgres connection-pool ceiling (headroom was
+  fine) — before re-reading `CancelOrder`'s own source surfaced the
+  single-character-scoped `ctx`/`txCtx` mixup directly. Fixed by changing that
+  one call site to `txCtx`, matching every other mutating use case in the
+  codebase.
+- **Rollback used the caller's own (possibly-expired) context
+  (`docs/adl/0018`).** Found by inspection while investigating the deadlock
+  above: `WithLock`'s rollback path called `tx.Rollback(txCtx)`, and since
+  `txCtx` only adds a value to the caller's `ctx` without giving it an
+  independent deadline, a callback failure caused by context expiration left
+  `Rollback` holding an already-canceled context — `pgx` refuses that outright,
+  so the rollback failed immediately rather than actually reaching Postgres,
+  compounding the original error instead of resolving it. Fixed by deriving a
+  fresh, independently-timed context
+  (`context.WithTimeout(context.Background(), 5*time.Second)`) for the rollback
+  call specifically. Confirmed identical in shape across `stores`, `depot`,
+  `baskets`, and `ordering`'s `postgres` packages, and fixed in all four in the
+  same pass, rather than only in `ordering` where it happened to surface.
+
+### Known, Explicitly Accepted Gaps
+
+- **No dedicated test proves the rollback-context fix.** Both bugs this phase
+  found were diagnosed and fixed by inspection/live reproduction, not by a test
+  written to prove the specific failure mode — unlike ADL 0010's
+  `TestStoreRepository_WithLock_SerializesConcurrentAccess`, which deliberately
+  proved its own claim with a timing test before trusting it. Named in ADL 0018
+  as a real, not-yet-closed verification gap.
+- **The narrow `depot`-cancellation race named in Step 1's design discussion
+  remains unverified under an actual race.** The script proves the _intended_
+  path (cancel while the list is still `pending`/`active`) works correctly
+  end-to-end, including confirming `depot`'s own list state actually flips to
+  `canceled` — but the specific timing window (`depot` completes the list right
+  as `ordering.CancelOrder` is mid-flight, so `CancelShoppingList` hits
+  `CodeInvalidArgument` because the list is `completed`, not because it's
+  already `canceled`) can't be forced deterministically through curl alone.
+  Deferred, consistent with how Phase 4's `AddItem` partial-failure gap and
+  Phase 5's concurrent-redelivery gap were both reasoned through and
+  code-complete but left unverified under a real race.
+- **The pre-existing check-then-act race (Phases 4/5) is unaffected by this
+  phase** — `CreateOrder`/`CompleteOrder` still have it, `CancelOrder` doesn't,
+  for the structural reason noted above (no unlocked lookup needed before
+  locking). Not newly introduced, not newly closed either.
+- **Deferred from Phase 5, still deferred:** the `storesclient`-style
+  test-seeding helper and the fuller automated test pass (real coverage for
+  `CompleteOrder`'s success/idempotency paths, a real test of an
+  already-canceled order receiving `ShoppingListCompleted` — now finally
+  possible to produce, since `CancelOrder` exists). None of this phase's new
+  code (`CancelOrder`, `GetOrder`, the `connectapi` layer) has automated test
+  coverage yet either — verification this phase was entirely live, end-to-end,
+  against the real containerized stack.
+
+### State at End of Phase 6
+
+- `ordering` now exposes a real, working ConnectRPC surface
+  (`ordering.v1.OrderingService/{GetOrder,CancelOrder}`), verified live
+  end-to-end: full lifecycle to `readied`, terminal-state guards in both
+  directions, cross-service cancellation propagation into `depot` confirmed by
+  directly querying `depot`'s own state afterward, and 404/400 handling for
+  unknown IDs.
+- Two real, previously-latent bugs were found and fixed this phase — one local
+  to `CancelOrder`'s own `ctx`/`txCtx` handling, one systemic across every
+  service's `WithLock` — plus the proto-naming collision, all three now recorded
+  as ADLs (0016 was already in place; 0017 and 0018 are new this phase) rather
+  than living only in this file.
+- `ordering` still runs as a bare host binary, not a container — every other
+  live service (`stores`, `depot`, `baskets`) now restarts automatically
+  whenever `docker compose up`/`build` cycles, but `ordering` does not, which is
+  exactly what made today's stale-connection red herring plausible in the first
+  place before the real bug was found. This asymmetry is the direct target of
+  Phase 7.
+- `docs/adl/0017-unique-proto-file-names-per-module.md` and
+  `docs/adl/0018-rollback-uses-independent-context.md` should be added to the
+  workspace's `docs/adl/` folder alongside the existing sixteen.
+
+### Carried Into Phase 7
+
+Phase 7, per the original Phase Plan, is containerization and live verification
+— and this phase gave it a concrete, motivated starting point rather than a
+generic checklist item: `ordering` needs its own Dockerfile (mirroring `depot`'s
+two-stage `golang:1.25`→`alpine:3.20` build), a `docker-compose.yaml` service
+block (with `DEPOT_URL` pointing at the internal Docker network address,
+following the pattern already partially wired in Phase 4, plus a published host
+port — `127.0.0.1:8083:8080`, continuing the sequential-assignment convention),
+and `Makefile` targets matching `stores`/`depot`/`baskets`' existing
+`up`/`build`/`logs` sections. Once containerized, `ordering` restarting
+alongside Postgres on every `docker compose up` closes the exact gap that made
+this phase's debugging session as long as it was. Phase 7 is also the natural
+point to finally pick up the test-seeding helper and broader automated test pass
+deferred across Phases 5 and 6, now that the full API surface (`connectapi`,
+`depotclient`, `CancelOrder`) actually exists to test against.

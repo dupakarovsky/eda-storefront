@@ -57,7 +57,7 @@ func (uc *CancelOrder) Execute(ctx context.Context, orderID string) (*domain.Ord
 		// ------------------------------
 
 		// save back to the database
-		if err := uc.orderRepo.Save(ctx, order); err != nil {
+		if err := uc.orderRepo.Save(txCtx, order); err != nil {
 			return fmt.Errorf("saving order: %w", err)
 		}
 		return nil

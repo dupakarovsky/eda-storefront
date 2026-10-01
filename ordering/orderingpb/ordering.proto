@@ -1,4 +1,3 @@
-// ordering/orderingpb/api.proto
 syntax = "proto3";
 
 package ordering.v1;

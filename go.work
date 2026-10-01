@@ -1,9 +1,9 @@
-go 1.25.0
+go 1.26.0
 
 use (
-	./foundation
-	./stores
-	./depot-baskets/depot
 	./depot-baskets/baskets
+	./depot-baskets/depot
+	./foundation
 	./ordering
+	./stores
 )

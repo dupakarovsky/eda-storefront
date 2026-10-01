@@ -2059,3 +2059,40 @@ already used in your shutdown wiring.
 Go ahead and make these changes, run `go build ./ordering/...`, and let me know
 how it goes — and whether `ordering` already has a compose port mapping or if we
 need to add one.
+
+## Phase 7 Plan
+
+**Step 1 — `ordering/Dockerfile`** Two-stage build (`golang:1.25` →
+`alpine:3.20`), mirroring `depot-Dockerfile` exactly — same `COPY foundation/`,
+same working-directory pattern, same `CGO_ENABLED=0` build.
+
+**Step 2 — Postgres init script** Looking at your `docker-compose.yaml`, each
+service's database gets its own init script under `postgres/init/`
+(`03-stores-db.sh`, `04-baskets-db.sh`, `05-depot-db.sh`) — `ordering` needs a
+`06-ordering-db.sh` creating `orderingdb` the same way, since nothing currently
+provisions that database inside the Postgres container (you've only ever
+connected to it via the host-mapped port from the bare binary).
+
+**Step 3 — `docker-compose.yaml` service block** A new `ordering:` entry
+mirroring `depot`'s block — `DB_HOST`/`DB_PORT`/`NATS_URL` overrides,
+`DEPOT_URL: http://depot:8080` (the internal address, continuing what Phase 4
+already partially wired for the bare-binary case), `depends_on` on
+`postgres`/`nats`/`depot` (and arguably `baskets`, since `ordering` consumes its
+stream too), and a published port — `127.0.0.1:8083:8080`, keeping your
+sequential convention.
+
+**Step 4 — `Makefile`** Looking at your current `Makefile`,
+`migrate/ordering/up`/`down` and `orderingdb/dev` already exist from Phase 1 —
+so this step is likely just confirming those still work against the
+containerized database, plus adding `logs/ordering` and `kill/ordering`
+alongside the existing `logs/depot`/`kill/depot` pair, which seem to be missing
+for `ordering` specifically.
+
+**Step 5 — Live verification** Stop the bare `ordering` binary, bring the full
+stack up via `make build && make up`, run the migration against the
+now-containerized `orderingdb`, and re-run `ordering-http-connect-2.sh`
+end-to-end against the fully containerized stack — plus the specific regression
+test this phase exists to enable: rebuild/restart the whole stack mid-session
+(the exact sequence that caused Phase 6's stale-connection confusion) and
+confirm `ordering` comes back cleanly without manual intervention, since
+`docker compose` restarts it alongside Postgres now.

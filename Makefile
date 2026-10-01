@@ -7,43 +7,62 @@
 ## ----------------------------------------------------------------------------
 COMPOSE := docker compose
 
-.PHONY: up down build logs logs/stores ps
+.PHONY:up
 up:
 	$(COMPOSE) up -d
 
 # down does NOT tear the the volumes intentionally
+.PHONY:down 
 down:
 	$(COMPOSE) down 
 
 # build all services from their Dockerfiles
+.PHONY:build
 build:
 	$(COMPOSE) build
 
 # logs of services
+.PHONY:logs 
 logs:
 	$(COMPOSE) logs
 
+.PHONY:logs/stores
 logs/stores:
 	$(COMPOSE) logs stores
 
+.PHONY:logs/baskets
 logs/baskets:
 	$(COMPOSE) logs baskets
 
+.PHONY:logs/depot 
 logs/depot:
 	$(COMPOSE) logs depot
 
+.PHONY:logs/ordering
+logs/ordering:
+	$(COMPOSE) logs ordering
+
+.PHONY:kill/stores
 kill/stores:
 	$(COMPOSE) kill -s SIGTERM stores
 
+.PHONY:kill/baskets
 kill/baskets:
 	$(COMPOSE) kill -s SIGTERM baskets
 
+.PHONY:kill/depot
 kill/depot:
 	$(COMPOSE) kill -s SIGTERM depot 
 
+.PHONY:kill/ordering
+kill/ordering:
+	$(COMPOSE) kill -s SIGTERM ordering
+
+.PHONY:ps
 ps:
 	$(COMPOSE) ps
 
+.PHONY:exec/pg
 exec/pg:
 	$(COMPOSE) exec postgres psql -h 127.0.0.1 -U edasuper -d edadb
 

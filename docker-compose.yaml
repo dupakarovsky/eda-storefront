@@ -22,6 +22,7 @@ services:
             - ./postgres/init/03-stores-db.sh:/docker-entrypoint-initdb.d/03-stores-db.sh
             - ./postgres/init/04-baskets-db.sh:/docker-entrypoint-initdb.d/04-baskets-db.sh
             - ./postgres/init/05-depot-db.sh:/docker-entrypoint-initdb.d/05-depot-db.sh
+            - ./postgres/init/06-ordering-db.sh:/docker-entrypoint-initdb.d/06-ordering-db.sh
             - ./postgres/config:/etc/postgresql/conf.d
         networks:
             - eda-net
@@ -72,7 +73,6 @@ services:
         networks:
             - eda-net
 
-    #
     baskets:
         build:
             context: .
@@ -81,7 +81,6 @@ services:
         restart: unless-stopped
         env_file:
             - ./depot-baskets/baskets/.env
-
         # override these values from .env. These values will
         # be applied for the docker container (the .env files have
         # the values for the operating in the local environment)
@@ -109,7 +108,6 @@ services:
             dockerfile: depot-baskets/depot/Dockerfile
         container_name: eda-depot
         restart: unless-stopped
-
         # override these values from .env. These values will
         # be applied for the docker container (the .env files have
         # the values for the operating in the local environment)
@@ -130,6 +128,39 @@ services:
                 condition: service_started
         ports:
             - 127.0.0.1:8082:8080
+        networks:
+            - eda-net
+
+    ordering:
+        build:
+            context: .
+            dockerfile: ./ordering/Dockerfile
+        container_name: eda-ordering
+        restart: unless-stopped
+        # override these values from .env. These values will
+        # be applied for the docker container (the .env files have
+        # the values for the operating in the local environment)
+        env_file:
+            - ./ordering/.env
+        environment:
+            DB_HOST: 'postgres'
+            DB_PORT: '5432'
+            NATS_URL: nats://nats:4222
+            LOG_FILE_PATH: ''
+            SRV_PORT: '8080'
+        depends_on:
+            postgres:
+                condition: service_healthy
+            nats:
+                condition: service_started
+            stores:
+                condition: service_started
+            baskets:
+                condition: service_started
+            depot:
+                condition: service_started
+        ports:
+            - 127.0.0.1:8083:8080
         networks:
             - eda-net
 

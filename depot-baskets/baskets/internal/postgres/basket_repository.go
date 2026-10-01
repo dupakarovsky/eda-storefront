@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/dupakarovsky/eda-storefront/baskets/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -37,7 +38,11 @@ func (r *BasketRepository) WithLock(ctx context.Context, fn func(txCtx context.C
 	// execute the domain level callback function inside a transaction; rollingback when
 	// fail
 	if err := fn(txCtx); err != nil {
-		if rbErr := tx.Rollback(txCtx); rbErr != nil {
+		// we need a new context to rollback the transaction. Otherwise tx.Rollback
+		// will try to run on an already expired context and will error immediately
+		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if rbErr := tx.Rollback(rbCtx); rbErr != nil {
 			return fmt.Errorf("rolling back transaction after error %q: %w", err, rbErr)
 		}
 		return err
