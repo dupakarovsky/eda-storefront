@@ -140,6 +140,8 @@ services:
         # override these values from .env. These values will
         # be applied for the docker container (the .env files have
         # the values for the operating in the local environment)
+        # inside the container the ordering needs to connect to the depot service
+        # on the port 8080, which is the port it' listening to
         env_file:
             - ./ordering/.env
         environment:
@@ -148,6 +150,7 @@ services:
             NATS_URL: nats://nats:4222
             LOG_FILE_PATH: ''
             SRV_PORT: '8080'
+            DEPOT_URL: 'http://depot:8080'
         depends_on:
             postgres:
                 condition: service_healthy

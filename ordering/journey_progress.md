@@ -93,7 +93,7 @@ its own `Order` row.
 unit rather than passing a `quantity`, avoiding a signature change to an
 already-live method.
 
-______________________________________________________________________
+---
 
 ## Phase Plan
 
@@ -135,7 +135,7 @@ whether cancellation needs to reach into `depot` too).
 live-verification discipline (curl script, concurrency test,
 redelivery/idempotency tests) every prior service got.
 
-______________________________________________________________________
+---
 
 ## Phase 1 — Order Aggregate & Persistence (COMPLETE)
 
@@ -660,7 +660,7 @@ the third concurrent listener in `ordering` (HTTP + baskets subscriber + this
 new one), extending ADL 0012's multi-listener pattern one step further than any
 prior phase has.
 
-______________________________________________________________________
+---
 
 ## Phase 5 Summary — COMPLETE
 
@@ -988,3 +988,103 @@ this phase's debugging session as long as it was. Phase 7 is also the natural
 point to finally pick up the test-seeding helper and broader automated test pass
 deferred across Phases 5 and 6, now that the full API surface (`connectapi`,
 `depotclient`, `CancelOrder`) actually exists to test against.
+
+## Phase 7 Summary — COMPLETE
+
+**Status:** Complete
+
+### What Was Built
+
+`ordering` is now a fully containerized service, closing the asymmetry named
+at the end of Phase 6 — every live service now restarts together under
+`docker compose`, rather than `ordering` alone persisting across rebuilds as
+a bare host binary.
+
+- **`ordering/Dockerfile`** — two-stage build (`golang:1.26` → `alpine:3.20`),
+  structurally identical to `depot-Dockerfile`. The `golang:1.26` base (one
+  minor version ahead of `stores`/`depot`/`baskets`' `golang:1.25`) was
+  required once `go.work`'s own `go` directive reached `1.26.0` — a real,
+  deliberate divergence from the other three services' build images, not an
+  inconsistency to reconcile; Go's toolchain resolution tolerates a mixed
+  workspace like this without issue.
+- **`postgres/init/06-ordering-db.sh`** — creates `orderingdb`, grants
+  `eda_dev`/`eda_user` privileges identically to `03`–`05`'s existing
+  pattern. Per ADL 0006's own documented behavior, this script did **not**
+  run automatically against the project's long-lived `pg-data` volume (
+  `docker-entrypoint-initdb.d/` scripts are unconditionally skipped once
+  `PGDATA` is already populated) — its contents were applied manually once,
+  the same "replicate what the script would have done" workaround ADL 0006
+  already used for `init.sh`. The script now exists correctly for the
+  future case of a genuinely fresh volume (a first-time clone, or a
+  deliberate `docker compose down -v`), not for this project's own
+  already-initialized one.
+- **`docker-compose.yaml`** — new `ordering:` service block, mirroring
+  `depot`'s shape: `DB_HOST`/`DB_PORT`/`NATS_URL` overrides, `DEPOT_URL:
+http://depot:8080` (the internal Docker network address), `depends_on` on
+  `postgres`/`nats`/`stores`/`baskets`/`depot`, published at
+  `127.0.0.1:8083:8080` continuing the project's sequential port convention.
+- **`ordering/.env`** — kept to bare-binary/local-dev values only (
+  `DEPOT_URL` removed from here entirely), matching the existing
+  `DB_HOST`/`NATS_URL` split convention: `.env` holds the host-run values,
+  `docker-compose.yaml`'s `environment:` block holds the container-only
+  overrides. This preserves the ability to run `ordering` as a bare binary
+  against an already-running containerized `depot`, which is exactly how
+  every prior phase's development happened.
+
+### Issues Found & Resolved
+
+- No new application-code issues this phase — purely infrastructure wiring,
+  following patterns already proven three times over (`stores`, `depot`,
+  `baskets`). The one real "issue" surfaced was confirming the already-known
+  ADL 0006 behavior (init scripts skipped on a populated volume) rather than
+  discovering a new gap.
+
+### Known, Explicitly Accepted Gaps
+
+- **Base image versions have diverged** (`golang:1.26` for `ordering`,
+  `golang:1.25` for the other three) — a deliberate, tracked consequence of
+  `go.work`'s version requirement, not an oversight.
+- **Every gap named at the end of Phase 6 remains open**: no automated test
+  coverage for `CancelOrder`/`GetOrder`/`connectapi`, no dedicated test
+  proving the rollback-context fix (ADL 0018), the narrow `depot`-completes
+  -during-cancellation race still unverified under an actual race, and the
+  `storesclient`-style test-seeding helper still undone. This phase's scope
+  was deliberately containerization and live verification only, per the
+  original Phase Plan — it did not attempt to close any of these.
+
+### State at End of Phase 7
+
+- `ordering` runs as `eda-ordering`, alongside `eda-stores`, `eda-baskets`,
+  `eda-depot`, `eda-postgres`, and `eda-nats`, all started and stopped
+  together via `make up`/`make down`/`make build`.
+- The specific regression this phase exists to close is confirmed fixed by
+  direct reproduction: a full `make build && make down && make up` cycle —
+  the exact sequence that caused Phase 6's stale-connection debugging
+  session — followed immediately by `ordering-http-connect-2.sh`, passed
+  clean on the first attempt, with no manual restart of `ordering` needed.
+- `system-state.md` should be updated to reflect `ordering` as "Live" (it
+  currently reads "Not started"), and `docker-compose.yaml`'s infrastructure
+  notes should mention the new `ordering` service block alongside the
+  existing `stores`/`baskets`/`depot` entries.
+
+### Possible Next Steps
+
+This was the last Phase in the original Phase Plan — the core objective of
+this project (`ordering` as a real, live, orchestrating service with its own
+API surface, fully containerized) is complete. What remains open, named
+across Phases 4 through 7 rather than discovered now, falls into a few
+groups a future session could pick up:
+
+- **Automated test coverage**: the deferred `storesclient`-style
+  test-seeding helper, real tests for `CompleteOrder`'s success/idempotency
+  paths, `CancelOrder`/`GetOrder`/`connectapi`, and the rollback-context fix
+  (ADL 0018) — all currently verified live rather than by automated test.
+- **The two named-but-unverified race conditions**: the check-then-act gap
+  in `CreateOrder`/`CompleteOrder` (Phases 4/5), and the `depot`-completes
+  -during-cancellation race (Phase 6) — both reasoned through and
+  code-complete, neither proven under an actual forced race.
+- **Project 4 (`payments`)**, per the roadmap — the next service in the
+  build sequence, depending only on `ordering`'s now-complete event surface
+  (`OrderReadied`/`OrderCanceled`).
+
+**`ordering` — project complete.**
