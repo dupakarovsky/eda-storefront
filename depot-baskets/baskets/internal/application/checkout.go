@@ -53,9 +53,9 @@ func (uc *Checkout) Execute(ctx context.Context, basketID string) (*domain.Baske
 		}
 
 		// retrive a map of "productID" -> "storeID" for each product id in the list
-		storeIDS, err := uc.catalogRepo.FindStoreIDsByProductIDs(ctx, productIDs)
+		storeIDS, err := uc.catalogRepo.FindStoreIDsByProductIDs(txCtx, productIDs)
 		if err != nil {
-			return fmt.Errorf("getting store ids")
+			return fmt.Errorf("getting store ids: %w", err)
 		}
 
 		// execute Checkout to emit the event

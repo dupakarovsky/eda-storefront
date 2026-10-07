@@ -215,6 +215,7 @@ func (r *CatalogRepository) FindStoreIDsByProductIDs(ctx context.Context, produc
 	if err != nil {
 		return nil, fmt.Errorf("querying productID: %v", err)
 	}
+	defer rows.Close()
 
 	storeIDs := make(map[string]string)
 

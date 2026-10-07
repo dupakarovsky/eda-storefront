@@ -51,6 +51,9 @@ func (uc *CompleteOrder) Execute(ctx context.Context, shoppingListID string) (*d
 		// retrieve the record from the orders database associated with this shoppingListID
 		// in order to updated it's status.
 		order, err = uc.orderRepo.FindByIDForUpdate(txCtx, foundOrder.ID)
+		if err != nil {
+			return fmt.Errorf("finding order by id: %w", err)
+		}
 
 		// check the status of the found order it's in OrderReadiedStatus.
 		// if it's already readied, then we return early since invoking MarkReadied

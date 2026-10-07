@@ -35,7 +35,7 @@ func mapError(err error) error {
 		errors.Is(err, domain.ErrProductNameIsBlank),
 		errors.Is(err, domain.ErrProductPriceIsNegative),
 		errors.Is(err, domain.ErrNotAPriceDecrease),
-		errors.Is(err, domain.ErrNotAPriceDecrease):
+		errors.Is(err, domain.ErrNotAPriceIncrease):
 
 		return connect.NewError(connect.CodeInvalidArgument, err)
 

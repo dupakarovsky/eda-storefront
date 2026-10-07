@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/dupakarovsky/eda-storefront/stores/internal/domain"
 	"github.com/jackc/pgx/v5"
@@ -39,7 +40,9 @@ func (r *ProductRepository) WithLock(ctx context.Context, fn func(txCtx context.
 	// execute the function;
 	if err := fn(txCtx); err != nil {
 		// Rollback transaction if the function returns an error
-		if rbErr := tx.Rollback(txCtx); rbErr != nil {
+		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if rbErr := tx.Rollback(rbCtx); rbErr != nil {
 			return fmt.Errorf("rolling back transaction after error %q: %w", err, rbErr)
 		}
 		return err
@@ -74,7 +77,7 @@ func (r *ProductRepository) Save(ctx context.Context, product *domain.Product) e
 	// execute the statement passsing the Product's fields to statement
 	_, err := exec.Exec(ctx, insertStmt, product.ID, product.StoreID, product.Name, product.Description, product.SKU, product.Price)
 	if err != nil {
-		return fmt.Errorf("saving product %q: %W", product.ID, err)
+		return fmt.Errorf("saving product %q: %w", product.ID, err)
 	}
 
 	return nil
@@ -110,7 +113,7 @@ func (r *ProductRepository) FindByID(ctx context.Context, id string) (*domain.Pr
 		case errors.Is(err, pgx.ErrNoRows):
 			return nil, domain.ErrProductNotFound
 		default:
-			return nil, fmt.Errorf("finding product %q: %w", productID, err)
+			return nil, fmt.Errorf("finding product %q: %w", id, err)
 		}
 	}
 
@@ -150,7 +153,7 @@ func (r *ProductRepository) FindByIDForUpdate(ctx context.Context, id string) (*
 		case errors.Is(err, pgx.ErrNoRows):
 			return nil, domain.ErrProductNotFound
 		default:
-			return nil, fmt.Errorf("finding product %q: %w", productID, err)
+			return nil, fmt.Errorf("finding product %q: %w", id, err)
 		}
 	}
 

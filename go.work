@@ -6,4 +6,5 @@ use (
 	./foundation
 	./ordering
 	./stores
+	./customers
 )

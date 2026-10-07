@@ -111,4 +111,17 @@ from the start rather than a hypothetical one.
   failing during an already-exhausted message is a real, currently
   unhandled compounding failure — narrow, but not zero, and worth
   remembering rather than assuming solved by this ADL.
-- The dead-letter subject convention
+- The dead-letter subject convention (`<service>.deadletter.<original
+-subject>`) needs to actually be included in whatever stream's subject
+  list receives it — this ADL does not itself define or provision that
+  stream; that's a concrete task for whichever phase first wires a real
+  `DeadLetterFunc` into a running `Subscriber` (`depot`/`baskets`,
+  Phase 3/4).
+- `MaxAckPending` (the consumer's cap on simultaneously-outstanding
+  unacked messages) was not addressed by this ADL and is left at its
+  server default — worth a deliberate look once real throughput/latency
+  numbers exist for `depot`/`baskets`, not invented speculatively here.
+- Real testing of this policy (forced handler failures, forced metadata
+  read failures, forced dead-letter-publish failures) is deferred to
+  Phase 3/4, once a concrete consumer exists to test it against — this ADL
+  documents the design, not a verified-under-load guarantee.
