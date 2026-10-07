@@ -1,0 +1,32 @@
+#!/bin/bash
+set -e
+
+# Connect to postgres in the container as "edasuper"
+# Create the customersdb database asigning "eda_dev"" as the owner
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+    CREATE DATABASE cusotmersdb OWNER eda_dev;
+EOSQL
+
+# -------------------------------------------------------------------
+#  LOGOUT OF edadb before executing the next command
+#  otherwise we'll be grandted privileges to the public schema of the
+#  edadb database
+# -------------------------------------------------------------------
+
+# Connect to postgres in the container as "edasuper"
+# Grant connect privileges to both "eda_dev" and "ead_user" to the new database
+# Grant the create command on the public schema only to "eda_dev".
+# "eda_user" has only table usage privileges
+# Extend those same provileges to every new table that is created
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname customersdb <<-EOSQL
+    GRANT CONNECT ON DATABASE customersdb TO eda_dev, eda_user;
+
+    GRANT USAGE, CREATE ON SCHEMA public TO eda_dev;
+    GRANT USAGE ON SCHEMA public TO eda_user;
+
+    ALTER DEFAULT PRIVILEGES FOR ROLE eda_dev IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO eda_user;
+
+    ALTER DEFAULT PRIVILEGES FOR ROLE eda_dev IN SCHEMA public
+        GRANT USAGE, SELECT ON SEQUENCES TO eda_user;
+EOSQL

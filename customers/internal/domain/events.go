@@ -12,8 +12,8 @@ const (
 // Event defines the behavior needed by any concrete type to be
 // categorized as an Event
 type Event interface {
-	AggregageID() string
-	EvetnName() string
+	AggregateID() string
+	EventName() string
 	OccurredAt() time.Time
 }
 
@@ -25,7 +25,7 @@ type eventBase struct {
 	occurredAt  time.Time
 }
 
-func (e eventBase) AggregageID() string {
+func (e eventBase) AggregateID() string {
 	return e.aggregateID
 }
 

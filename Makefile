@@ -72,7 +72,7 @@ exec/pg:
 include .postgres.env
 export
 
-.PHONY: migrate/stores/up migrate/stores/down migrate/baskets/up migrate/baskets/down migrate/depot/up migrate/depot/down 
+.PHONY: migrate/stores/up migrate/stores/down migrate/baskets/up migrate/baskets/down migrate/depot/up migrate/depot/down migrate/customers/up migrate/customers/down 
 
 ## --- Stores DB -- 
 migrate/stores/up:
@@ -122,6 +122,19 @@ migrate/ordering/down:
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/orderingdb?sslmode=disable" \
 		down 1
 
+# Makefile (add after the Ordering DB migration block)
+## ----------------------------------------------------------------------------
+
+## --- Customers DB -- 
+migrate/customers/up:
+	@migrate -path customers/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/customersdb?sslmode=disable" \
+		up
+
+migrate/customers/down:
+	@migrate -path customers/migrations \
+		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/customersdb?sslmode=disable" \
+		down 1
 ## ============================================================================
 ## FOR DEVELOPMENT ONLY
 ## ============================================================================
@@ -189,6 +202,12 @@ depotdb/dev:
 # connect to the orderingdb as the edb_dev user
 orderingdb/dev:
 	psql -h 127.0.0.1 -p 5433 -d orderingdb -U eda_dev
+
+.PHONY: customersdb/dev
+# connect to the orderingdb as the edb_dev user
+customersdb/dev:
+	psql -h 127.0.0.1 -p 5433 -d customersdb -U eda_dev
+
 
 ## ----------------------------------------------------------------------------
 ## -- nats inspection ---
