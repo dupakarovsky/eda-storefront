@@ -66,8 +66,10 @@ type NATSConfig struct {
 	URL            string        `envconfig:"NATS_URL" default:"nats://127.0.0.1:4223"`
 	Name           string        `envconfig:"NATS_NAME"`
 	ConnectTimeout time.Duration `envconfig:"NATS_CONNECT_TIMEOUT" default:"5s"`
-	MaxReconnects  int           `envconfig:"NATS_MAX_RECONNECTS" default:"5"`
-	ReconnectWait  time.Duration `envconfig:"NATS_RECONNECT_WAIT" default:"2s"`
+	// Defult MaxReconnects is 5 tries. Setting to -1 sets an unlimited number of retries
+	MaxReconnects int `envconfig:"NATS_MAX_RECONNECTS" default:"-1"`
+	//MaxReconnects  int           `envconfig:"NATS_MAX_RECONNECTS" default:"5"`
+	ReconnectWait time.Duration `envconfig:"NATS_RECONNECT_WAIT" default:"2s"`
 }
 
 // Load reads the .env file and injects the key/value pairs using os.Setenv

@@ -3,9 +3,17 @@ package foundationnats
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
+
+// Event defines the behavior for any concrete type to implement
+type Event interface {
+	AggregateID() string
+	EventName() string
+	OccurredAt() time.Time
+}
 
 // Publisher type will hold a jetstream context and will be able
 // to publish messages to the stream
@@ -23,7 +31,6 @@ func NewPublisher(js jetstream.JetStream) *Publisher {
 
 // Publish will place a payload to the stream under a subject and receive back
 // an Acknowledgement and a possible error.
-// /
 func (p *Publisher) Publish(ctx context.Context, subject string, payload []byte, msgID string) (*jetstream.PubAck, error) {
 
 	// publish to the stream to receive an acknowledgement.

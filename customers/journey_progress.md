@@ -62,3 +62,39 @@ conventions from ADLs 0007-0018 from the first line.
 
 - `domain.CustomerRepository` interface and `ErrCustomerNotFound`
 - Provisioning `customersdb`
+
+## Phase 2: Persistence (complete)
+
+### What was built
+
+- `customersdb` provisioning script (`07-customers-db.sh`), applied manually to
+  the long-lived volume
+- Migration `000001_create_customers_table` with `CHECK (btrim(...) <> '')` on
+  name and sms_number
+- `domain.CustomerRepository` and `ErrCustomerNotFound`
+- `internal/postgres`: `Executor`, context-scoped transaction (ADL 0010),
+  `CustomerRepository`
+- `WithLock` rolls back on an independent 5s context (ADL 0018) from the first
+  commit
+
+### Findings
+
+- `btrim(x)` strips only the ASCII space; Go's `TrimSpace` strips all Unicode
+  whitespace. The CHECK constraints are a coarse backstop; the domain is the
+  real validator.
+- Lock test measures from the moment goroutine A holds the lock, and asserts B
+  reads A's committed value
+- First test that proves ADL 0018's claim: rollback succeeds after the caller's
+  context is canceled
+
+### Verification
+
+- All 8 repository tests pass as `eda_user`
+- Breakage 1 (repository bypasses the tx executor): lock test fails, B returned
+  in 1.8ms
+- Breakage 2 (rollback on caller ctx): only the expired-context test fails
+
+### Carried into Phase 3
+
+- Stream `customers`, subject `customers.customer.*` (no dead-letter subject,
+  since Customers consumes nothing)

@@ -28,7 +28,8 @@ func Connect(cfg Config) (*nats.Conn, jetstream.JetStream, error) {
 		opts = append(opts, nats.Timeout(cfg.ConnectTimeout))
 	}
 
-	// A zero value means No recoonects.A value of -1 is an unlimeted
+	// A zero value means it applies the default max reconnects attempts
+	// whith is 60 times. A value of -1 is an unlimeted
 	// number of reconnects.
 	if cfg.MaxReconnects != 0 {
 		opts = append(opts, nats.MaxReconnects(cfg.MaxReconnects))
