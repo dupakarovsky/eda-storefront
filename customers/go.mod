@@ -3,11 +3,13 @@ module github.com/dupakarovsky/eda-storefront/customers
 go 1.26.0
 
 require (
+	connectrpc.com/connect v1.21.0
 	github.com/dupakarovsky/eda-storefront/foundation v0.0.0-00010101000000-000000000000
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/joho/godotenv v1.5.1
 	github.com/nats-io/nats.go v1.54.0
+	google.golang.org/protobuf v1.36.12
 )
 
 replace github.com/dupakarovsky/eda-storefront/foundation => ../foundation

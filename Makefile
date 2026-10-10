@@ -42,6 +42,10 @@ logs/depot:
 logs/ordering:
 	$(COMPOSE) logs ordering
 
+.PHONY:logs/cusotmers
+logs/customers:
+	$(COMPOSE) logs cusotmers
+
 .PHONY:kill/stores
 kill/stores:
 	$(COMPOSE) kill -s SIGTERM stores
@@ -57,6 +61,10 @@ kill/depot:
 .PHONY:kill/ordering
 kill/ordering:
 	$(COMPOSE) kill -s SIGTERM ordering
+
+.PHONY:kill/customers
+kill/customers:
+	$(COMPOSE) kill -s SIGTERM customers
 
 .PHONY:ps
 ps:
@@ -122,9 +130,6 @@ migrate/ordering/down:
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/orderingdb?sslmode=disable" \
 		down 1
 
-# Makefile (add after the Ordering DB migration block)
-## ----------------------------------------------------------------------------
-
 ## --- Customers DB -- 
 migrate/customers/up:
 	@migrate -path customers/migrations \
@@ -135,6 +140,7 @@ migrate/customers/down:
 	@migrate -path customers/migrations \
 		-database "postgres://eda_dev:$(EDA_DEV_PASSWORD)@$(MIGRATE_DB_HOST):$(MIGRATE_DB_PORT)/customersdb?sslmode=disable" \
 		down 1
+
 ## ============================================================================
 ## FOR DEVELOPMENT ONLY
 ## ============================================================================
@@ -142,7 +148,7 @@ migrate/customers/down:
 ## ----------------------------------------------------------------------------
 ## --- run stores locally -- 
 ## ----------------------------------------------------------------------------
-.PHONY: foundation/smoke stores/run baskets/run depot/run ordering/run
+.PHONY: foundation/smoke stores/run baskets/run depot/run ordering/run customers/run
 
 foundation/smoke:
 	@echo 'Building application...'
@@ -179,6 +185,12 @@ ordering/run:
 	chmod +x ./ordering/bin/ordering
 	cd ./ordering && ./bin/ordering
 
+customers/run:
+	@echo 'Running customers service...'
+	@mkdir -p ./customers/bin
+	GOOS=linux GOARCH=amd64 go build -o=./customers/bin/customers ./customers/cmd/service/
+	chmod +x ./customers/bin/customers
+	cd ./customers && ./bin/customers
 
 ## ----------------------------------------------------------------------------
 ## -- database access ---

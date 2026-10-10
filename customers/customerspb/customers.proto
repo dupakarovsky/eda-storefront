@@ -1,0 +1,78 @@
+// customers/customerspb/customers.proto
+syntax = "proto3";
+
+package customers.v1;
+
+option go_package = "github.com/dupakarovsky/eda-storefront/customers/customerspb;customerspb";
+
+// ==== Data types ============================================================
+
+message Customer {
+  string id = 1;
+  string name = 2;
+  string sms_number = 3;
+  bool enabled = 4;
+}
+
+// ==== Messages ============================================================
+
+// === RegisterCustomer ===
+message RegisterCustomerRequest {
+  string name = 1;
+  string sms_number = 2;
+}
+message RegisterCustomerResponse {
+  Customer customer = 1;
+}
+
+// === ChangeSmsNumber ===
+message ChangeSmsNumberRequest {
+  string customer_id = 1;
+  string sms_number = 2;
+}
+message ChangeSmsNumberResponse {
+  Customer customer = 1;
+}
+
+// === EnableCustomer ===
+message EnableCustomerRequest {
+  string customer_id = 1;
+}
+message EnableCustomerResponse {
+  Customer customer = 1;
+}
+
+
+// === DisableCustomer ===
+message DisableCustomerRequest {
+  string customer_id = 1;
+}
+message DisableCustomerResponse {
+  Customer customer = 1;
+}
+
+// === AuthorizeCustomer ===
+message AuthorizeCustomerRequest {
+  string customer_id = 1;
+}
+message AuthorizeCustomerResponse {}
+
+
+// === GetCustomer ===
+message GetCustomerRequest {
+  string customer_id = 1;
+}
+message GetCustomerResponse {
+  Customer customer = 1;
+}
+
+// ==== Services ============================================================
+
+service CustomersService {
+  rpc RegisterCustomer(RegisterCustomerRequest) returns (RegisterCustomerResponse);
+  rpc ChangeSmsNumber(ChangeSmsNumberRequest) returns (ChangeSmsNumberResponse);
+  rpc EnableCustomer(EnableCustomerRequest) returns (EnableCustomerResponse);
+  rpc DisableCustomer(DisableCustomerRequest) returns (DisableCustomerResponse);
+  rpc AuthorizeCustomer(AuthorizeCustomerRequest) returns (AuthorizeCustomerResponse);
+  rpc GetCustomer(GetCustomerRequest) returns (GetCustomerResponse);
+}

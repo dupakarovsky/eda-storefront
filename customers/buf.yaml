@@ -1,0 +1,11 @@
+# customers/buf.yaml
+version: v2
+
+modules:
+    - path: customerspb
+lint:
+    use:
+        - STANDARD
+breaking:
+    use:
+        - FILE

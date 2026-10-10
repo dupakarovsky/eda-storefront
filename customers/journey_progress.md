@@ -98,3 +98,90 @@ conventions from ADLs 0007-0018 from the first line.
 
 - Stream `customers`, subject `customers.customer.*` (no dead-letter subject,
   since Customers consumes nothing)
+
+<!-- customers/journey_progress.md (replace the Phase 3 section) -->
+
+## Phase 3: Events and application layer (complete)
+
+### What was built
+
+- `internal/events`: payloads, envelope, subject mapping, stream `customers`
+  (`customers.customer.*`), wire format pinned in tests
+- `publishWithRetry` / `publishDomainEvent`: a fifth local copy; promotion into
+  `foundation` deferred (it would also drag over `NewEnvelope` and `SubjectFor`)
+- Six use cases: RegisterCustomer, ChangeSmsNumber, EnableCustomer,
+  DisableCustomer (locked read-modify-write), AuthorizeCustomer, GetCustomer
+  (unlocked reads)
+- `module.go` without a connect server (added in Phase 4)
+
+### Decisions
+
+- Commands return the saved customer alongside a publish error (ADL 0007
+  contract)
+- Publish happens after commit, outside the row lock
+- Use cases stay explicit (no shared helper), matching earlier services
+- `AuthorizeCustomer` reads without a lock; it can race with a concurrent
+  disable (document in CONTRACT.md)
+
+### Findings
+
+- The retry loop is tested on a virtual clock (`testing/synctest`) with exact
+  timing assertions, including the 10.5s worst case from ADL 0007
+
+- Use-case concurrency test (4 simultaneous disables) is deterministic, not
+  timing-dependent: without `FOR UPDATE` all 4 succeed
+
+- A hang during development came from a use-case bug in the locked section
+  (cause to be confirmed)
+
+- A real 10s outage closes the NATS client permanently (`MaxReconnects=5` x
+  `ReconnectWait=2s`); `RetryOnFailedConnect` covers initial connect only. All
+  services share this default. Affects ADL 0011's claim about recovery from
+  independent restarts.
+
+- The hang during development was `Save(ctx)` instead of `Save(txCtx)` inside
+  `WithLock`: the self-deadlock ADL 0018 describes. Running with `-timeout 30s`
+  turns a recurrence into a fast failure.
+
+- A real 10s NATS outage permanently closed every service's connection
+  (`MaxReconnects=5`). Fixed system-wide by changing the `foundation/config`
+  default to -1 (ADL 0011 addendum). A 15s-outage test fails with the old value
+  and passes with the new one.
+
+### Verification
+
+- Retry loop: three breakages caught (sleep after final attempt, unbounded
+  attempt, changed backoff)
+- Use cases: dormant lock (4/4 runs fail), save-without-publish caught
+- NATS outage: 1 message for 1 logical publish; fresh-ID-per-attempt gives 3;
+  exhausted retries leave a saved customer with no event
+
+### Carried into Phase 4
+
+- `customers.proto`, buf generation, error mapping, server, `cmd/service`
+
+## Phase 4: ConnectRPC API (complete)
+
+### What was built
+
+- `customerspb/customers.proto` (package `customers.v1`, filename unique per ADL 0017), `buf.yaml`, `buf.gen.yaml`
+- `internal/connectapi`: `mapError`, `toProtoCustomer`, `Server`, six handlers
+- `module.go` gains `ConnectServer`; `cmd/service` (main, health); `make customers/run`
+- `customers-http-connect.sh`: 18-step curl verification, including every status code
+
+### Decisions
+
+- Error codes: not found = `NotFound`; blank name/number and unchanged number = `InvalidArgument` (unchanged number matches `stores`' same-price case); already enabled/disabled = `FailedPrecondition`; disabled customer on authorize = `PermissionDenied`
+- Handlers stay thin: no input validation at the RPC layer. The application layer builds and validates aggregates before any repository call, consistent with the other services and ADL 0008. A UUID-shape and length-cap proposal was considered and rejected.
+- Responses return the whole `Customer`, not only an ID as in the book
+
+### Findings
+
+- proto3 JSON omits `enabled: false`; clients must read a missing `enabled` as false (CONTRACT.md)
+- A malformed ID like `does-not-exist` returns `NotFound`, as in the other services
+- Error messages expose the wrapped use-case chain to clients, as elsewhere in the system
+- Tranche 2 note for ADL 0020: `ordering` should retry the authorize call only on `Unavailable`, `DeadlineExceeded`, and `Internal`, and treat every other code as permanent. An allowlist of permanent codes would retry requests that can never succeed.
+
+### Verification
+
+- 18-step curl script: all statuses as designed; 4 events published for 4 successful state changes, none for reads, authorizations, or rejected calls

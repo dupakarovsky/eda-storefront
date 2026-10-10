@@ -23,7 +23,7 @@ func NewGetCustomer(customerRepo domain.CustomerRepository) *GetCustomer {
 func (uc *GetCustomer) Execute(ctx context.Context, customerID string) (*domain.Customer, error) {
 	order, err := uc.customerRepo.FindByID(ctx, customerID)
 	if err != nil {
-		return nil, fmt.Errorf("finding order: %w", err)
+		return nil, fmt.Errorf("finding customer: %w", err)
 	}
 
 	return order, nil

@@ -67,8 +67,7 @@ type NATSConfig struct {
 	Name           string        `envconfig:"NATS_NAME"`
 	ConnectTimeout time.Duration `envconfig:"NATS_CONNECT_TIMEOUT" default:"5s"`
 	// Defult MaxReconnects is 5 tries. Setting to -1 sets an unlimited number of retries
-	MaxReconnects int `envconfig:"NATS_MAX_RECONNECTS" default:"-1"`
-	//MaxReconnects  int           `envconfig:"NATS_MAX_RECONNECTS" default:"5"`
+	MaxReconnects int           `envconfig:"NATS_MAX_RECONNECTS" default:"-1"`
 	ReconnectWait time.Duration `envconfig:"NATS_RECONNECT_WAIT" default:"2s"`
 }
 

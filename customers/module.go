@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/dupakarovsky/eda-storefront/customers/internal/application"
+	"github.com/dupakarovsky/eda-storefront/customers/internal/connectapi"
 	"github.com/dupakarovsky/eda-storefront/customers/internal/domain"
 	customersevents "github.com/dupakarovsky/eda-storefront/customers/internal/events"
 	"github.com/dupakarovsky/eda-storefront/customers/internal/postgres"
@@ -35,6 +36,7 @@ type Module struct {
 	DisableCustomerUC   *application.DisableCustomer
 	AuthorizeCustomerUC *application.AuthorizeCustomer
 	GetCustomerUC       *application.GetCustomer
+	ConnectServer       *connectapi.Server
 }
 
 func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) (*Module, error) {
@@ -124,6 +126,18 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 	authorizeCustomerUC := application.NewAuthorizeCustomer(customerRepo)
 	getCustomerUC := application.NewGetCustomer(customerRepo)
 
+	//============================================================================
+	// RPC SERVER INITIALIZATION
+	//============================================================================
+	connectServer := connectapi.NewServer(
+		registerCustomerUC,
+		changeSmsNumberUC,
+		enableCustomerUC,
+		disableCustomerUC,
+		authorizeCustomerUC,
+		getCustomerUC,
+	)
+
 	return &Module{
 		Logger:    logger,
 		Pool:      pool,
@@ -139,6 +153,7 @@ func New(ctx context.Context, cfg foundationconfig.Config, logger *slog.Logger) 
 		DisableCustomerUC:   disableCustomerUC,
 		AuthorizeCustomerUC: authorizeCustomerUC,
 		GetCustomerUC:       getCustomerUC,
+		ConnectServer:       connectServer,
 	}, nil
 
 }

@@ -687,3 +687,176 @@ state-changing use cases `ChangeSmsNumber`, `EnableCustomer`, and
 (`stores` has five of these) does it that way and each use case can diverge on
 its own. A shared helper would couple three things that have no reason to change
 together. Do you agree, or do you want to extract the helper?
+
+First, you didn't mention the health check I asked for, so I don't know whether
+your live services survived the 10-second outage. Please run it before the new
+round:
+
+```bash
+for p in 8080 8081 8082 8083; do curl -s -o /dev/null -w "$p %{http_code}\n" localhost:$p/health; done
+```
+
+Restart any that return 500 (`docker compose restart <service>`). That will also
+give a clean baseline for the manual check below.
+
+## The other two variables
+
+I'd leave both as they are.
+
+- **`NATS_CONNECT_TIMEOUT` (5s)** is the dial timeout of a single connection
+  attempt, not the length of the reconnect loop. On localhost a stopped NATS
+  refuses the connection immediately, so it never comes into play. It would only
+  matter on a network that silently drops packets, where each attempt could hang
+  for up to 5s.
+- **`NATS_RECONNECT_WAIT` (2s)** is the pause between attempts. It sets how long
+  the client takes to notice NATS is back, which is up to about 2s. That is why
+  the restart test above succeeded on attempt 3 and not attempt 2. Lowering it
+  only adds reconnect churn. `nats.go` also adds a small jitter (100ms by
+  default), which is enough at our scale.
+
+One related finding: the comment in `foundation/nats/connect.go` says "a zero
+value means no reconnects", but the code skips the option when the value is 0,
+so the library default applies, which is 60 attempts. `NATS_MAX_RECONNECTS=0`
+therefore does not mean "never". That is a documentation fix for the
+housekeeping pass.
+
+## A consequence to keep in mind
+
+With unlimited reconnects, the client buffers publishes made while it is
+disconnected (8MB by default) and flushes them when NATS returns, even after the
+caller has given up. An event whose retries were "exhausted" can therefore still
+arrive later, if the process stays alive. That helps in practice, but it is not
+a guarantee. A crash loses the buffer, and it can overflow. It doesn't change
+the outbox decision, so I wouldn't write it into any contract. Our
+exhausted-retries test is unaffected, because it closes the module before
+restarting NATS, which discards the buffer.
+
+## The round
+
+### 1. `customers/.env`
+
+```bash
+# customers/.env (add)
+NATS_MAX_RECONNECTS=-1
+```
+
+This reaches the tests through `godotenv.Load`. That function never overrides
+variables already set in the shell, which makes the first run below possible.
+
+### 2. `internal/application/nats_reconnect_test.go`
+
+```go
+// customers/internal/application/nats_reconnect_test.go
+```
+
+Expected: Run 1 fails at the first check with `status CLOSED`, which reproduces
+the bug. Run 2 passes after about 16 to 18s, and the status stays `RECONNECTING`
+until NATS returns.
+
+### 4. Check that nothing regressed
+
+```bash
+go test ./internal/application/ -run='NATSRestart|RetriesAreExhausted' -v -timeout 90s
+```
+
+I expect two differences, and I'd like to see them:
+
+- In the exhausted-retries test, attempt 5 should now fail with a timeout
+  (`context deadline exceeded`) instead of `nats: connection closed`.
+- Total time should rise slightly toward the 10.5s budget, since attempt 5 now
+  waits out its full 1.5s timeout.
+
+The test should still pass.
+
+## After the results
+
+I won't touch the other services until you've seen these. When you're ready,
+applying the fix to the live stack needs no rebuild. It is one environment line
+per service in `docker-compose.yaml`, followed by `docker compose up -d` to
+recreate the containers:
+
+```yaml
+# docker-compose.yaml (add under each service's environment: stores, baskets, depot, ordering)
+NATS_MAX_RECONNECTS: '-1'
+```
+
+The matching manual proof is to stop NATS for 15s and start it again, then check
+`/health` on all four. Before the fix they would return 500 afterward, and after
+it they should return 200 and the subscribers should resume consuming.
+
+Please send the output of runs 1, 2, and the regression check.
+
+## Phase 4
+
+## Phase 4: ConnectRPC API
+
+- **Step 1:** proto, buf config, code generation (this message)
+- **Step 2:** `mapError`, proto conversion, the server and its handlers
+- **Step 3:** `cmd/service` (main, health) and a local curl script
+
+## Step 1: Proto and generation
+
+### 1.1 `customerspb/customers.proto`
+
+```proto
+// customers/customerspb/customers.proto
+```
+
+### 1.2 `buf.yaml`
+
+```yaml
+# customers/buf.yaml
+```
+
+### 1.3 `buf.gen.yaml`
+
+```yaml
+# customers/buf.gen.yaml
+```
+
+### 1.4 Generate and build
+
+From `customers/`:
+
+```bash
+
+```
+
+You should end up with `customerspb/customers.pb.go` and
+`customerspb/customerspbconnect/customers.connect.go`.
+
+### What to notice
+
+- **The filename is `customers.proto`, not `api.proto`.** ADL 0017's panic
+  ("file already registered") happens when two generated packages share one
+  process. Nothing imports Customers' generated code yet, but `ordering` will in
+  Tranche 2, when it calls `AuthorizeCustomer`. This avoids rediscovering that
+  collision.
+- **Field names are `customer_id`, matching `stores`' `store_id`, not the book's
+  `id`.** In JSON this becomes `customerId`, which is the shape your curl
+  scripts already use for the other services.
+- **Responses return the whole `Customer`.** This follows `stores`, `baskets`,
+  and `depot`, and differs from the book, where `RegisterCustomer` returns only
+  an ID. The caller gets the stored, trimmed values back.
+- **`AuthorizeCustomerResponse` is empty on purpose.** Success means
+  "authorized", and failure comes back as an error code. The
+  permanent-versus-transient split from the contract-evolution design lives in
+  the status code, not the body.
+- **Lint is not part of the workflow.** `buf.yaml` carries `STANDARD` as
+  `ordering`'s does, but `PACKAGE_DIRECTORY_MATCH` would object to
+  `customers.v1` living in `customerspb/`, and the other services never run
+  lint. I'm not claiming it passes. We only run `generate`.
+
+## Check-in
+
+Please run the cleanup check, then generation, and send me the outage output and
+the `go build` result.
+
+Question for Step 2: `AuthorizeCustomer` for a disabled customer needs a status
+code. The other services map every domain rejection to `CodeInvalidArgument`,
+but Tranche 2's design needs `ordering` to tell "this customer will never be
+authorized" (reject the order) from "Customers is unreachable" (retry).
+`CodeInvalidArgument` already means "bad request" elsewhere in this system, so
+I'd map `ErrCustomerNotAuthorized` to `CodePermissionDenied`, which is precise
+and new. Do you want that, or would you rather keep to `CodeInvalidArgument` for
+consistency and let `ordering` distinguish by error message?
