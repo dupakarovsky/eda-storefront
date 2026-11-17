@@ -50,12 +50,14 @@ type ProductRebrandedPayload struct {
 // ProductPriceIncreased Event between domains boundaries
 type ProductPriceIncreasedPayload struct {
 	Delta float64 `json:"delta"`
+	Price float64 `json:"price"` // new
 }
 
 // ProductPriceDecreasedPayload will be responsibile for carrying the
 // ProductPriceDecreased Event between domains boundaries
 type ProductPriceDecreasedPayload struct {
 	Delta float64 `json:"delta"`
+	Price float64 `json:"price"` // new
 }
 
 // ProductRemovedPayload will be responsibile for carrying the
@@ -107,11 +109,13 @@ func toPayload(event domain.Event) (any, error) {
 	case domain.ProductPriceIncreased:
 		return ProductPriceIncreasedPayload{
 			Delta: e.Delta,
+			Price: e.Price, // new
 		}, nil
 
 	case domain.ProductPriceDecreased:
 		return ProductPriceDecreasedPayload{
 			Delta: e.Delta,
+			Price: e.Price, // new
 		}, nil
 
 	case domain.ProductRemoved:

@@ -25,10 +25,10 @@ func TestCheckout_Execute_Succeeds(t *testing.T) {
 	storeID2 := uniqueID("exp-checkout-store-2")
 	productID2 := uniqueID("exp-checkout-product-2")
 
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID1, storeID1, "Bread", "sourdough loaf", "SKU-BREAD-1", 5.00); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID1, storeID1, "Bread", "sourdough loaf", "SKU-BREAD-1", 5.00, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID2, storeID2, "Milk", "whole milk", "SKU-MILK-1", 2.95); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID2, storeID2, "Milk", "whole milk", "SKU-MILK-1", 2.95, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
 	// ---------------------------------------------------------------------------

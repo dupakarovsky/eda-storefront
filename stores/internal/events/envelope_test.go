@@ -389,3 +389,53 @@ func TestEnvelope_Marshal_Unmarshal_ProductRemoved_Success(t *testing.T) {
 		t.Fatalf("unexpected error unmarshalling: %v", err)
 	}
 }
+
+func TestEnvelope_ProductPriceEvents_CarryAbsolutePrice(t *testing.T) {
+	cases := []struct {
+		name      string
+		apply     func(p *domain.Product) (domain.Event, error)
+		wantPrice float64
+		wantDelta float64
+	}{
+		{"increase", func(p *domain.Product) (domain.Event, error) { return p.IncreasePrice(12.50) }, 12.50, 2.50},
+		{"decrease", func(p *domain.Product) (domain.Event, error) { return p.DecreasePrice(7.50) }, 7.50, -2.50},
+		{"decrease to zero", func(p *domain.Product) (domain.Event, error) { return p.DecreasePrice(0) }, 0, -10},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			product, _, err := domain.NewProduct("product-1", "store-1", "Espresso Beans", "Dark roast, 1lb bag", "SKU-001", 10.00)
+			if err != nil {
+				t.Fatalf("unexpected product error: %v", err)
+			}
+
+			event, err := tc.apply(product)
+			if err != nil {
+				t.Fatalf("unexpected price change error: %v", err)
+			}
+
+			envelope, err := events.NewEnvelope(event)
+			if err != nil {
+				t.Fatalf("unexpected new envelope failure: %v", err)
+			}
+
+			var raw map[string]any
+			if err := json.Unmarshal(envelope.Data, &raw); err != nil {
+				t.Fatalf("unexpected error unmarshalling payload: %v", err)
+			}
+
+			price, ok := raw["price"].(float64)
+			if !ok {
+				t.Fatalf("expected a price key in the payload, got %s", envelope.Data)
+			}
+			if price != tc.wantPrice {
+				t.Errorf("expected price %v, got %v", tc.wantPrice, price)
+			}
+
+			delta, ok := raw["delta"].(float64)
+			if !ok || delta != tc.wantDelta {
+				t.Errorf("expected delta %v, got %v (present: %v)", tc.wantDelta, delta, ok)
+			}
+		})
+	}
+}

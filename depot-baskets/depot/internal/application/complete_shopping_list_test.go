@@ -30,7 +30,7 @@ func TestCompleteShoppingList_Execute_Succeeds(t *testing.T) {
 		t.Fatalf("failed to seed catalog store: %v", err)
 	}
 
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Oat Milk", "1 quart", "SKU-OAT-1", 3.25); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Oat Milk", "1 quart", "SKU-OAT-1", 3.25, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
 

@@ -42,7 +42,7 @@ logs/depot:
 logs/ordering:
 	$(COMPOSE) logs ordering
 
-.PHONY:logs/cusotmers
+.PHONY:logs/customers
 logs/customers:
 	$(COMPOSE) logs cusotmers
 
@@ -80,7 +80,7 @@ exec/pg:
 include .postgres.env
 export
 
-.PHONY: migrate/stores/up migrate/stores/down migrate/baskets/up migrate/baskets/down migrate/depot/up migrate/depot/down migrate/customers/up migrate/customers/down 
+.PHONY: migrate/stores/up migrate/stores/down migrate/baskets/up migrate/baskets/down migrate/depot/up migrate/depot/down migrate/customers/up migrate/customers/down migrate/ordering/up migrate/ordering/down
 
 ## --- Stores DB -- 
 migrate/stores/up:
@@ -148,14 +148,8 @@ migrate/customers/down:
 ## ----------------------------------------------------------------------------
 ## --- run stores locally -- 
 ## ----------------------------------------------------------------------------
-.PHONY: foundation/smoke stores/run baskets/run depot/run ordering/run customers/run
+.PHONY: stores/run baskets/run depot/run ordering/run customers/run
 
-foundation/smoke:
-	@echo 'Building application...'
-	@mkdir -p ./bin
-	GOOS=linux GOARCH=amd64 go build -o=./bin/foundation-smoketest ./foundation-smoketest
-	chmod +x ./bin/foundation-smoketest
-	./bin/foundation-smoketest
 
 stores/run:
 	@echo 'Running stores service...'
@@ -235,6 +229,6 @@ nats/baskets:
 .PHONY: format
 # formats markdown file to keep it withint 80 characters long
 format:
-	mdformat --wrap=80 ./customers/*.md
+	mdformat --wrap=80 contract-evolution/**/*.md
 
 

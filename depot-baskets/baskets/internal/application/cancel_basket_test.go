@@ -38,7 +38,7 @@ func TestCancelBasket_Execute_RejectsAlreadyCheckedOut(t *testing.T) {
 
 	storeID := uniqueID("cancel-checked-out-store")
 	productID := uniqueID("cancel-checked-out-product")
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Butter", "1 stick", "SKU-BUTTER-1", 2.00); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Butter", "1 stick", "SKU-BUTTER-1", 2.00, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
 

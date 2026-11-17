@@ -24,7 +24,7 @@ func TestAddItem_Execute_Succeeds(t *testing.T) {
 	productID := uniqueID("add-item-product")
 
 	// generate data for the catalog_store database
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Whole Milk", "1 gallon", "SKU-MILK-1", 3.50); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Whole Milk", "1 gallon", "SKU-MILK-1", 3.50, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
 

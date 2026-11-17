@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -30,6 +31,10 @@ type storeRebrandedPayload struct {
 
 type storeParticipationPayload struct {
 	Participating bool `json:"participating"`
+}
+type productPricePayload struct {
+	Delta float64  `json:"delta"`
+	Price *float64 `json:"price,omitempty"`
 }
 
 type productAddedPayload struct {
@@ -101,7 +106,13 @@ func Project(repo Repository, logger *slog.Logger) foundationnats.MessageHandler
 			if err := json.Unmarshal(env.Data, &p); err != nil {
 				return fmt.Errorf("unmarshaling ProductAdded payload: %w", err)
 			}
-			return repo.CreateProduct(ctx, env.AggregateID, p.StoreID, p.Name, p.Description, p.SKU, p.Price)
+
+			meta, err := msg.Metadata()
+			if err != nil {
+				return fmt.Errorf("reading message metadata: %w", err)
+			}
+			seq := meta.Sequence.Stream
+			return repo.CreateProduct(ctx, env.AggregateID, p.StoreID, p.Name, p.Description, p.SKU, p.Price, seq)
 
 		case "ProductRebranded":
 			var p productRebrandedPayload
@@ -110,8 +121,9 @@ func Project(repo Repository, logger *slog.Logger) foundationnats.MessageHandler
 			}
 			return repo.RebrandProduct(ctx, env.AggregateID, p.Name, p.Description)
 
+			// depot-baskets/baskets/internal/catalog/project.go (changed: price events case)
 		case "ProductPriceIncreased", "ProductPriceDecreased":
-			var p productPriceDeltaPayload
+			var p productPricePayload
 			if err := json.Unmarshal(env.Data, &p); err != nil {
 				return fmt.Errorf("unmarshaling %s payload: %w", env.EventName, err)
 			}
@@ -120,18 +132,22 @@ func Project(repo Repository, logger *slog.Logger) foundationnats.MessageHandler
 			if err != nil {
 				return fmt.Errorf("reading message metadata: %w", err)
 			}
+			seq := meta.Sequence.Stream
 
-			err = repo.AdjustProductPrice(ctx, env.AggregateID, p.Delta, meta.Sequence.Stream)
-			if err != nil && err != ErrPriceAdjustmentSkipped {
-				return err
+			if p.Price != nil {
+				err = repo.SetProductPrice(ctx, env.AggregateID, *p.Price, seq)
+			} else {
+				err = repo.AdjustProductPrice(ctx, env.AggregateID, p.Delta, seq)
 			}
-			if err == ErrPriceAdjustmentSkipped {
-				logger.Info("price adjustment skipped, already applied",
+
+			if errors.Is(err, ErrPriceAdjustmentSkipped) {
+				logger.Info("price change skipped, already applied",
 					"product_id", env.AggregateID,
-					"stream_seq", meta.Sequence.Stream,
+					"stream_seq", seq,
 				)
+				return nil
 			}
-			return nil
+			return err
 
 		case "ProductRemoved":
 			return repo.DeleteProduct(ctx, env.AggregateID)

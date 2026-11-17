@@ -28,7 +28,7 @@ func TestInitiateShoppingList_Execute_Succeeds(t *testing.T) {
 	if err := mod.CatalogRepo.CreateStore(ctx, storeID, "Corner Grocer", "1 Main St"); err != nil {
 		t.Fatalf("failed to seed catalog store: %v", err)
 	}
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Bread", "sourdough loaf", "SKU-BREAD-1", 5.00); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Bread", "sourdough loaf", "SKU-BREAD-1", 5.00, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
 	// add the product to the list

@@ -9,11 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-var (
-	ErrProductNotFound        = errors.New("product not found in catalog")
-	ErrPriceAdjustmentSkipped = errors.New("price adjustment skipped: already applied or product not found")
-)
-
 // CatalogRepository is a any type that has the behavior to execute sql
 // statements (pgxpool)
 type CatalogRepository struct {
@@ -120,23 +115,47 @@ func (r *CatalogRepository) FindStoreByID(ctx context.Context, id string) (*cata
 
 // CreateProduct will add a new product to the catalog_products based on the
 // CreateProduct event consumed from the stream.
-func (r *CatalogRepository) CreateProduct(ctx context.Context, id, storeID, name, description, sku string, price float64) error {
+func (r *CatalogRepository) CreateProduct(ctx context.Context, id, storeID, name, description, sku string, price float64, seq uint64) error {
 
 	stmt := `
-	INSERT INTO catalog_products (id, store_id, name, description, sku, price)
-	VALUES ($1, $2, $3, $4, $5, $6)
+	INSERT INTO catalog_products (id, store_id, name, description, sku, price, last_applied_seq)
+	VALUES ($1, $2, $3, $4, $5, $6, $7)
 	ON CONFLICT (id) DO UPDATE SET
 		store_id = EXCLUDED.store_id,
 		name = EXCLUDED.name,
 		description = EXCLUDED.description,
 		sku = EXCLUDED.sku,
-		price = EXCLUDED.price
+		price = EXCLUDED.price,
+		last_applied_seq = EXCLUDED.last_applied_seq
+	WHERE catalog_products.last_applied_seq < EXCLUDED.last_applied_seq
 	`
 
 	exec := executorFrom(ctx, r.db)
 
-	if _, err := exec.Exec(ctx, stmt, id, storeID, name, description, sku, price); err != nil {
+	if _, err := exec.Exec(ctx, stmt, id, storeID, name, description, sku, price, seq); err != nil {
 		return fmt.Errorf("creating catalog product %q: %w", id, err)
+	}
+
+	return nil
+}
+
+// depot-baskets/depot/internal/postgres/catalog_repository.go (new)
+func (r *CatalogRepository) SetProductPrice(ctx context.Context, id string, price float64, seq uint64) error {
+
+	stmt := `
+	UPDATE catalog_products SET price = $2, last_applied_seq = $3
+	WHERE id = $1 AND last_applied_seq < $3
+	`
+
+	exec := executorFrom(ctx, r.db)
+
+	tag, err := exec.Exec(ctx, stmt, id, price, seq)
+	if err != nil {
+		return fmt.Errorf("setting catalog product price %q: %w", id, err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return catalog.ErrPriceAdjustmentSkipped
 	}
 
 	return nil
@@ -179,7 +198,7 @@ func (r *CatalogRepository) AdjustProductPrice(ctx context.Context, id string, d
 	}
 
 	if tag.RowsAffected() == 0 {
-		return ErrPriceAdjustmentSkipped
+		return catalog.ErrPriceAdjustmentSkipped
 	}
 
 	return nil

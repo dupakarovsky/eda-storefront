@@ -94,19 +94,16 @@ Proposed layout:
 eda-storefront/                    (workspace root)
 ├── go.work
 ├── go.work.sum
-├── docker-compose.yml             (grows by one service block per project)
+├── docker-compose.yaml            (grows by one service block per project)
 ├── Makefile                       (grows by one set of targets per project)
+├── postgres/                      (init scripts and hardening config, ADL 0006)
 ├── foundation/                    (shared kit: config, graceful shutdown,
-│                                    logging, NATS/Postgres wiring — built
-│                                    once during Project 1, reused everywhere)
-│   └── go.mod
+│   └── go.mod                       logging, NATS/Postgres wiring)
 ├── stores/
 │   ├── journey_progress.md
 │   └── go.mod
 ├── depot-baskets/
-│   ├── journey_progress.md        (one log covering both services,
-│   │                                same convention as order-fulfillment's
-│   │                                Order+Inventory pairing)
+│   ├── journey_progress.md        (one log covering both services)
 │   ├── depot/
 │   │   └── go.mod
 │   └── baskets/
@@ -114,10 +111,12 @@ eda-storefront/                    (workspace root)
 ├── ordering/
 │   ├── journey_progress.md
 │   └── go.mod
-├── payments/
+├── customers/
 │   ├── journey_progress.md
 │   └── go.mod
-├── customers/
+├── contract-evolution/
+│   └── journey_progress.md        (no go.mod: owns no service)
+├── payments/
 │   ├── journey_progress.md
 │   └── go.mod
 ├── storefront/
@@ -131,12 +130,11 @@ eda-storefront/                    (workspace root)
 │   └── go.mod
 └── docs/
     ├── roadmap.md                 (this file)
-    ├── system-state.md            (live status of every service — see below)
+    ├── system-state.md            (live status of every service)
     └── adl/
-        ├── 0001-service-build-order.md
-        ├── 0002-aggregate-persistence-model.md
-        ├── 0003-modernized-technology-stack.md
-        └── (future decisions, numbered sequentially)
+        └── 0001 to 0020           (numbered sequentially; see the folder)
+
+
 ```
 
 ## The documentation model — three layers
@@ -167,18 +165,90 @@ progress logs.
 `system-state.md` to confirm what it can assume is genuinely live, and no
 project ends without updating it again to reflect what's now live as a result.
 
+## Amendments to the original sequence
+
+The sequence below is the real build order, which differs from the one
+originally planned in `docs/adl/0001`. The ADLs themselves are not rewritten;
+this section carries the corrections.
+
+- **`foundation` became its own project** ahead of `stores`, rather than being
+  built together with it (ADL 0005).
+- **`customers` was built before `payments`**, not after it as ADL 0001 had it,
+  because `payments` depends on customer identity throughout: the book's
+  `AuthorizePayment` takes a `customer_id`, and an `Order` carries a
+  `CustomerID` (ADL 0019).
+- **A `contract-evolution` project was added** between `customers` and
+  `payments`. It threads price, customer identity and order totals through the
+  live contracts so `payments` can be built against real data instead of stubs
+  (ADL 0020). It creates no new service and modifies `stores`, `baskets`,
+  `depot` and `ordering`.
+- **Project folders carry no numeric prefix** (ADL 0014).
+
+The **Ref** column keeps each project's original number, because ADLs and
+progress logs refer to projects by it ("Project 3", "Project 8"). The **Order**
+column is the build position. Where the two differ, Order is the truth.
+
+<!-- docs/roadmap.md: replace the Project sequence table -->
+
+<!-- docs/roadmap.md: replace the whole Project sequence section -->
+
 ## Project sequence
 
-| #   | Project         | Service(s)                | Must already be live                                                                      | What's genuinely new                                                                                                                                                                        |
-| --- | --------------- | ------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | `stores`        | `stores`                  | — (root)                                                                                  | The `foundation/` package (config, graceful shutdown, logging, NATS/Postgres wiring), built once here and reused by every later project; first real NATS-publishing service                 |
-| 2   | `depot-baskets` | `depot`, `baskets`        | `stores`                                                                                  | Consuming real events off a real broker and projecting them into a local read cache — done twice, against two different domains, in one project                                             |
-| 3   | `ordering`      | `ordering`                | `stores`, `depot`, `baskets`                                                              | Fan-in coordination: one service reacting to two independent upstream event sources; the real event-driven analogue of `order-fulfillment`'s in-process `PayOrder`/`Inventory` coordination |
-| 4   | `payments`      | `payments`                | all of the above                                                                          | Simplest remaining consumer (single upstream); closes the core commerce loop end-to-end                                                                                                     |
-| 5   | `customers`     | `customers`               | — (root, but built now rather than earlier, since nothing needed it until the storefront) | Second and last standalone root service                                                                                                                                                     |
-| 6   | `storefront`    | web UI (Templ + Datastar) | `stores`, `baskets`, `ordering`, `payments`, `customers`                                  | First frontend project; Datastar/SSE integration with real backend events; real customer identity from day one (no placeholder auth)                                                        |
-| 7   | `search`        | `search`                  | `stores`, `ordering`, `customers`                                                         | Multi-source read-model / CQRS projection pattern; feeds a real "order history" page back into the storefront                                                                               |
-| 8   | `notifications` | `notifications`           | `customers`, `ordering`                                                                   | The one piece the source book leaves unimplemented — real integration with an email/SMS provider behind a `Notifier` port, verified against a real inbox (Mailpit) before a real provider   |
+| Order | Ref | Project              | Services                                          | Must already be live                                     |
+| ----- | --- | -------------------- | ------------------------------------------------- | -------------------------------------------------------- |
+| 1     | 0   | `foundation`         | shared kit                                        | none                                                     |
+| 2     | 1   | `stores`             | `stores`                                          | `foundation`                                             |
+| 3     | 2   | `depot-baskets`      | `depot`, `baskets`                                | `stores`                                                 |
+| 4     | 3   | `ordering`           | `ordering`                                        | `stores`, `depot`, `baskets`                             |
+| 5     | 5   | `customers`          | `customers`                                       | none (root)                                              |
+| 6     | n/a | `contract-evolution` | modifies `stores`, `baskets`, `depot`, `ordering` | `customers` and everything above                         |
+| 7     | 4   | `payments`           | `payments`                                        | all of the above                                         |
+| 8     | 6   | `storefront`         | web UI (Templ + Datastar)                         | `stores`, `baskets`, `ordering`, `payments`, `customers` |
+| 9     | 7   | `search`             | `search`                                          | `stores`, `ordering`, `customers`                        |
+| 10    | 8   | `notifications`      | `notifications`                                   | `customers`, `ordering`                                  |
+
+See `docs/adl/0001-service-build-order.md` for the reasoning behind the
+original order, and "Amendments to the original sequence" above for where the
+real order differs.
+
+### What's genuinely new in each project
+
+**`foundation`.** Config, graceful shutdown, logging, the HTTP
+`Router`/`Middleware` stack, Postgres pool and NATS JetStream wiring, plus the
+hardened Postgres baseline, all proven against real containers (ADL 0005,
+0006).
+
+**`stores`.** The first real domain service and the first NATS-publishing
+service, with a ConnectRPC API and the conventions every later service
+inherits.
+
+**`depot-baskets`.** Consuming real events off a real broker and projecting
+them into a local read cache, done twice against two domains in one project.
+
+**`ordering`.** Fan-in coordination across two upstream event sources, plus a
+synchronous orchestration call into `depot` (ADL 0016).
+
+**`customers`.** Built before `payments` because `payments` depends on
+customer identity (ADL 0019). Live, with no consumers yet.
+
+**`contract-evolution`.** Price, customer identity and totals threaded through
+the live contracts (ADL 0020, Tranches 1 and 2). No new service.
+
+**`payments`.** A single upstream consumer (`ordering`) with customer identity
+from `customers`. It originates the payment identifier (ADL 0020, Tranche 3)
+and closes the core commerce loop. The outbox decision (ADL 0007) is settled
+before it starts.
+
+**`storefront`.** The first frontend project: Datastar/SSE integration with
+real backend events, and real customer identity from day one (no placeholder
+auth).
+
+**`search`.** A multi-source read-model / CQRS projection pattern that feeds a
+real "order history" page back into the storefront.
+
+**`notifications`.** The one piece the source book leaves unimplemented: real
+integration with an email/SMS provider behind a `Notifier` port, verified
+against a real inbox (Mailpit) before a real provider.
 
 See `docs/adl/0001-service-build-order.md` for the reasoning behind this order,
 including the alternatives that were considered and rejected — particularly why

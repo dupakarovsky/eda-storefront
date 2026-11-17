@@ -19,7 +19,7 @@ func TestRemoveItem_Execute_Succeeds(t *testing.T) {
 
 	storeID := uniqueID("remove-item-store")
 	productID := uniqueID("remove-item-product")
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Eggs", "dozen, large", "SKU-EGG-1", 4.00); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Eggs", "dozen, large", "SKU-EGG-1", 4.00, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
 

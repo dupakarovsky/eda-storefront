@@ -53,7 +53,7 @@ func TestCancelShoppingList_Execute_RejectsAlreadyCompleted(t *testing.T) {
 	if err := mod.CatalogRepo.CreateStore(ctx, storeID, "Corner Grocer", "1 Main St"); err != nil {
 		t.Fatalf("failed to seed catalog store: %v", err)
 	}
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Cheese", "8oz block", "SKU-CHEESE-1", 4.50); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Cheese", "8oz block", "SKU-CHEESE-1", 4.50, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
 	// add the product to the list

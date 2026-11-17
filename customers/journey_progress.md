@@ -164,24 +164,119 @@ conventions from ADLs 0007-0018 from the first line.
 
 ### What was built
 
-- `customerspb/customers.proto` (package `customers.v1`, filename unique per ADL 0017), `buf.yaml`, `buf.gen.yaml`
+- `customerspb/customers.proto` (package `customers.v1`, filename unique per ADL
+  0017), `buf.yaml`, `buf.gen.yaml`
 - `internal/connectapi`: `mapError`, `toProtoCustomer`, `Server`, six handlers
-- `module.go` gains `ConnectServer`; `cmd/service` (main, health); `make customers/run`
-- `customers-http-connect.sh`: 18-step curl verification, including every status code
+- `module.go` gains `ConnectServer`; `cmd/service` (main, health);
+  `make customers/run`
+- `customers-http-connect.sh`: 18-step curl verification, including every status
+  code
 
 ### Decisions
 
-- Error codes: not found = `NotFound`; blank name/number and unchanged number = `InvalidArgument` (unchanged number matches `stores`' same-price case); already enabled/disabled = `FailedPrecondition`; disabled customer on authorize = `PermissionDenied`
-- Handlers stay thin: no input validation at the RPC layer. The application layer builds and validates aggregates before any repository call, consistent with the other services and ADL 0008. A UUID-shape and length-cap proposal was considered and rejected.
+- Error codes: not found = `NotFound`; blank name/number and unchanged number =
+  `InvalidArgument` (unchanged number matches `stores`' same-price case);
+  already enabled/disabled = `FailedPrecondition`; disabled customer on
+  authorize = `PermissionDenied`
+- Handlers stay thin: no input validation at the RPC layer. The application
+  layer builds and validates aggregates before any repository call, consistent
+  with the other services and ADL 0008. A UUID-shape and length-cap proposal was
+  considered and rejected.
 - Responses return the whole `Customer`, not only an ID as in the book
 
 ### Findings
 
-- proto3 JSON omits `enabled: false`; clients must read a missing `enabled` as false (CONTRACT.md)
-- A malformed ID like `does-not-exist` returns `NotFound`, as in the other services
-- Error messages expose the wrapped use-case chain to clients, as elsewhere in the system
-- Tranche 2 note for ADL 0020: `ordering` should retry the authorize call only on `Unavailable`, `DeadlineExceeded`, and `Internal`, and treat every other code as permanent. An allowlist of permanent codes would retry requests that can never succeed.
+- proto3 JSON omits `enabled: false`; clients must read a missing `enabled` as
+  false (CONTRACT.md)
+- A malformed ID like `does-not-exist` returns `NotFound`, as in the other
+  services
+- Error messages expose the wrapped use-case chain to clients, as elsewhere in
+  the system
+- Tranche 2 note for ADL 0020: `ordering` should retry the authorize call only
+  on `Unavailable`, `DeadlineExceeded`, and `Internal`, and treat every other
+  code as permanent. An allowlist of permanent codes would retry requests that
+  can never succeed.
 
 ### Verification
 
-- 18-step curl script: all statuses as designed; 4 events published for 4 successful state changes, none for reads, authorizations, or rejected calls
+- 18-step curl script: all statuses as designed; 4 events published for 4
+  successful state changes, none for reads, authorizations, or rejected calls
+
+## Phase 5: Containerization (complete)
+
+### What was built
+
+- `customers/Dockerfile` (`golang:1.26` builder, copies only `foundation` and
+  `customers`), compose service on host port 8084, `logs/customers` and
+  `kill/customers` targets
+- No `depends_on` on other services: Customers is a root (ADL 0001)
+
+### Findings
+
+- The container reads the same `customersdb` as the local run; `DB_HOST` and
+  `NATS_URL` are overridden by the compose environment
+- Graceful shutdown on SIGTERM logs the full sequence (signal, goroutine exit,
+  shutdown complete) and closes NATS and Postgres after `Run` returns, as ADL
+  0012 requires
+- With no `NATS_MAX_RECONNECTS` override anywhere, the `foundation` default
+  alone carried all five services through a 15s NATS outage
+
+### Verification
+
+- 18-step curl script against the container: same statuses and events as the
+  local run
+- `make build` → `make down` → `make up`: five services healthy, data intact
+- 15s NATS outage: five healthy; a new customer registered; a new store reached
+  both catalog caches
+
+## Phase 6: Close-out (complete)
+
+### What was built
+
+- `CONTRACT.md`, including the status-code table and retry guidance for callers
+- `docs/system-state.md` and `docs/roadmap.md` updated; ADL 0019 and ADL 0020 written; ADL 0011 and ADL 0018 addenda
+
+## Project summary
+
+Customers is live: a root service with six RPCs, four events, and no
+consumers. Verification: 8 domain test groups, 8 repository tests (as
+`eda_user`, with lock and expired-context rollback tests), 6 fake-JetStream
+retry tests on a virtual clock, 14 use-case tests against real Postgres and
+NATS, 2 real-outage tests, 1 reconnect test, an error-mapping unit test, an
+18-step curl script against the container, and a full `down` → `up` cycle.
+
+## Findings that apply system-wide
+
+- A NATS outage over ~10s permanently closed every service's connection (fixed by `NATS_MAX_RECONNECTS` default -1; ADL 0011 addendum)
+- `docker compose kill` does not trigger `restart: unless-stopped`: the container stays down. Observed, not investigated. Whether a real crash restarts it was not tested.
+- Use-case `Save(ctx)` inside `WithLock` self-deadlocks (ADL 0018 addendum)
+- `btrim` strips only ASCII space; the domain's `TrimSpace` strips all Unicode whitespace
+- proto3 JSON omits a `false` boolean
+
+## Handoff: next session is `contract-evolution` (ADL 0020)
+
+Create `contract-evolution/journey_progress.md` (folder only, no `go.mod`).
+
+**First, before any code:**
+
+1. Apply the ADL 0011/0018 addenda and the roadmap/system-state edits above.
+2. Run `ordering/ordering-http-connect-2.sh` against the live stack: the one regression not yet seen after the NATS default change.
+3. Settle the Tranche 2 open questions in ADL 0020.
+
+**Proposed phases:**
+
+1. Tranche 1a: pre-check query; `stores` two-decimal rule; absolute `price` on the two price events; projection in `baskets` and `depot` switched to absolute with `last_applied_seq`, tolerating events without `price`; `000004` migrations; delta-reorder test
+2. Tranche 1b: `Checkout` resolves price (replace `FindStoreIDsByProductIDs`); `BasketCheckedOut.price`; `ordering` `Item.Price`, `order_items.price`, `GetTotal()`, `OrderCreated`/`OrderReadied` enrichment; four contracts
+3. Tranche 2a: `baskets` `customer_id` (domain, migration `000005`, events, RPC, every test and script)
+4. Tranche 2b: `ordering` `CustomerID`, `customersclient`, authorization with the retry classification, `rejected` status and `OrderRejected`, Dockerfile/`go.mod`/compose/config wiring
+5. Close-out: contracts, `system-state.md`, ADL status
+
+**Housekeeping to fold in when touching those files:**
+
+- `baskets/checkout.go`: `fmt.Errorf("getting store ids")` drops the cause (no `%w`); `FindStoreIDsByProductIDs` lacks `defer rows.Close()`
+- `foundation/nats/connect.go`: the comment saying `MaxReconnects` 0 means "no reconnects" is wrong (the library default applies); `foundation/config/config.go`: remove the commented-out old line and the "Defult" typo
+- `.gitignore`: `customers/bin/`, `*.log`
+
+**Still open, outside this project:** the outbox decision and the money-type decision, both before `payments`; promoting `publishWithRetry`/`publishDomainEvent` into `foundation` (the retry loop now has tests the other four copies lack); backporting the expired-context rollback test; the `restart` behavior above.
+
+**Attach to the next session (ADL 0004 amended: this project modifies four live services, so their source is a real dependency, not reference):** `docs/` in full; `foundation/` in full; full source of `stores`, `depot-baskets`, `ordering`; `customers/CONTRACT.md`, `customers/customerspb/` (generated code, since `ordering` will import it), and `customers/customers-http-connect.sh`; `docker-compose.yaml`; `Makefile`; `postgres/init/`.

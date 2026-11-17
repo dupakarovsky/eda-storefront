@@ -4,7 +4,7 @@ set -e
 # Connect to postgres in the container as "edasuper"
 # Create the customersdb database asigning "eda_dev"" as the owner
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
-    CREATE DATABASE cusotmersdb OWNER eda_dev;
+    CREATE DATABASE customersdb OWNER eda_dev;
 EOSQL
 
 # -------------------------------------------------------------------

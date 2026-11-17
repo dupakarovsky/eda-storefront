@@ -66,3 +66,18 @@ service-specific variation.
   forced-outage test) — if rollback ever needs a different budget in
   practice, that's new information to fold back into this ADL, not a sign
   the number was wrong from the start.
+
+<!-- docs/adl/0018-rollback-uses-independent-context.md (append) -->
+
+## Consequences (addendum, 2026-10-10)
+
+- The verification gap this ADL named is closed for `customers`:
+  `TestCustomerRepository_WithLock_RollsBackAfterCallerContextExpires` proves
+  rollback completes after the caller's context is canceled, and fails when the
+  rollback uses the caller's context (experiment run). The other four services
+  have the same fix but no equivalent test.
+- A related defect surfaced during `customers`: a use case calling
+  `Save(ctx, ...)` instead of `Save(txCtx, ...)` inside `WithLock` self-deadlocks
+  (the write goes through a second pooled connection and blocks on the row lock
+  the transaction holds). The compiler cannot see it; running tests with
+  `-timeout 30s` turns it into a fast failure.

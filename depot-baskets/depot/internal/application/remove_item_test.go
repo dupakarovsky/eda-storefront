@@ -26,7 +26,7 @@ func TestRemoveItem_Execute_Succeeds(t *testing.T) {
 	if err := mod.CatalogRepo.CreateStore(ctx, storeID, "Corner Grocer", "1 Main St"); err != nil {
 		t.Fatalf("failed to seed catalog store: %v", err)
 	}
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Eggs", "dozen, large", "SKU-EGG-1", 4.00); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Eggs", "dozen, large", "SKU-EGG-1", 4.00, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
 
@@ -92,7 +92,7 @@ func TestRemoveItem_Execute_RejectsProductNotInStop(t *testing.T) {
 	if err := mod.CatalogRepo.CreateStore(ctx, storeID, "Corner Grocer", "1 Main St"); err != nil {
 		t.Fatalf("failed to seed catalog store: %v", err)
 	}
-	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Butter", "1 stick", "SKU-BUTTER-1", 2.00); err != nil {
+	if err := mod.CatalogRepo.CreateProduct(ctx, productID, storeID, "Butter", "1 stick", "SKU-BUTTER-1", 2.00, 0); err != nil {
 		t.Fatalf("failed to seed catalog product: %v", err)
 	}
 

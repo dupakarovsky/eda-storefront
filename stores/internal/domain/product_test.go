@@ -310,6 +310,130 @@ func TestProduct_DecreasePrice(t *testing.T) {
 	})
 }
 
+func TestProduct_PriceDecimals(t *testing.T) {
+	noisy := 0.1
+	noisy += 0.2
+
+	valid := []struct {
+		name  string
+		price float64
+	}{
+		{"zero", 0},
+		{"whole number", 5},
+		{"one decimal", 9.5},
+		{"two decimals", 9.99},
+		{"naive check trips on 1.15", 1.15},
+		{"naive check trips on 4.35", 4.35},
+		{"naive check trips on 8.2", 8.2},
+		{"largest NUMERIC(10,2) value", 99999999.99},
+	}
+
+	for _, tc := range valid {
+		t.Run("valid/"+tc.name, func(t *testing.T) {
+			if _, _, err := NewProduct("product-1", "store-1", "Widget", "desc", "SKU-1", tc.price); err != nil {
+				t.Fatalf("expected %v to be accepted, got error: %v", tc.price, err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name  string
+		price float64
+	}{
+		{"three decimals", 9.995},
+		{"tenth of a cent", 0.001},
+		{"1.005", 1.005},
+		{"float noise from arithmetic", noisy},
+	}
+
+	for _, tc := range invalid {
+		t.Run("invalid/"+tc.name, func(t *testing.T) {
+			product, event, err := NewProduct("product-1", "store-1", "Widget", "desc", "SKU-1", tc.price)
+			if !errors.Is(err, ErrProductPriceHasTooManyDecimals) {
+				t.Fatalf("expected ErrProductPriceHasTooManyDecimals for %v, got %v", tc.price, err)
+			}
+			if product != nil || event != nil {
+				t.Errorf("expected nil product and event on error")
+			}
+		})
+	}
+}
+
+func TestProduct_NegativePriceWithDecimals_ReportsNegativeFirst(t *testing.T) {
+	_, _, err := NewProduct("product-1", "store-1", "Widget", "desc", "SKU-1", -1.005)
+	if !errors.Is(err, ErrProductPriceIsNegative) {
+		t.Fatalf("expected ErrProductPriceIsNegative, got %v", err)
+	}
+}
+
+func TestProduct_IncreasePrice_RejectsTooManyDecimals(t *testing.T) {
+	product := newTestProduct(t)
+	original := product.Price
+
+	event, err := product.IncreasePrice(12.995)
+	if !errors.Is(err, ErrProductPriceHasTooManyDecimals) {
+		t.Fatalf("expected ErrProductPriceHasTooManyDecimals, got %v", err)
+	}
+	if event != nil {
+		t.Errorf("expected nil event on error, got %+v", event)
+	}
+	if product.Price != original {
+		t.Errorf("expected price unchanged at %v, got %v", original, product.Price)
+	}
+}
+
+func TestProduct_DecreasePrice_RejectsTooManyDecimals(t *testing.T) {
+	product := newTestProduct(t)
+	original := product.Price
+
+	event, err := product.DecreasePrice(7.001)
+	if !errors.Is(err, ErrProductPriceHasTooManyDecimals) {
+		t.Fatalf("expected ErrProductPriceHasTooManyDecimals, got %v", err)
+	}
+	if event != nil {
+		t.Errorf("expected nil event on error, got %+v", event)
+	}
+	if product.Price != original {
+		t.Errorf("expected price unchanged at %v, got %v", original, product.Price)
+	}
+}
+
+func TestProduct_PriceEvents_CarryAbsolutePrice(t *testing.T) {
+	t.Run("increase", func(t *testing.T) {
+		product := newTestProduct(t)
+
+		event, err := product.IncreasePrice(12.99)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		increased, ok := event.(ProductPriceIncreased)
+		if !ok {
+			t.Fatalf("expected ProductPriceIncreased, got %T", event)
+		}
+		if increased.Price != 12.99 {
+			t.Errorf("expected event price 12.99, got %v", increased.Price)
+		}
+	})
+
+	t.Run("decrease", func(t *testing.T) {
+		product := newTestProduct(t)
+
+		event, err := product.DecreasePrice(7.99)
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+
+		decreased, ok := event.(ProductPriceDecreased)
+		if !ok {
+			t.Fatalf("expected ProductPriceDecreased, got %T", event)
+		}
+		if decreased.Price != 7.99 {
+			t.Errorf("expected event price 7.99, got %v", decreased.Price)
+		}
+	})
+}
+
 func TestProduct_Remove(t *testing.T) {
 	// create a new Product
 	product := newTestProduct(t)

@@ -26,7 +26,9 @@ type Repository interface {
 
 	//== product ==
 	//--- write ---
-	CreateProduct(ctx context.Context, id, storeID, name, description, sku string, price float64) error
+	// depot-baskets/depot/internal/catalog/repository.go (changed in Repository)
+	CreateProduct(ctx context.Context, id, storeID, name, description, sku string, price float64, seq uint64) error
+	SetProductPrice(ctx context.Context, id string, price float64, seq uint64) error
 	RebrandProduct(ctx context.Context, id, name, description string) error
 	AdjustProductPrice(ctx context.Context, id string, delta float64, seq uint64) error
 	DeleteProduct(ctx context.Context, id string) error

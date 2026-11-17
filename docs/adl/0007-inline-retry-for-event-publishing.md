@@ -112,3 +112,24 @@ scope, not correctness — see Context and Decision above.
   its own piece of work — noted here as a standing item, in the same spirit
   as this ADL's original outbox deferral, rather than solved under pressure
   while closing out Phase 4.
+
+## Consequences (addendum, 2026-10-15)
+
+- The first Consequences bullet above says a publish failure that outlasts
+  "three retries (600ms of attempts)" leaves an aggregate with no event. That
+  wording predates the final design and is stale. The budget in force, and
+  the one every service uses, is the Decision's: five attempts, each bounded to
+  1.5s, with 200ms/400ms/800ms/1600ms delays between them, about 10.5s in the
+  worst case. An outage shorter than that is absorbed by the retry loop; a
+  longer one still leaves a saved aggregate with no event.
+- `publishWithRetry` and `publishDomainEvent` now exist as five local copies
+  (`stores`, `baskets`, `depot`, `ordering`, `customers`), no longer one.
+  Promotion into `foundation/nats` is still deferred. The `customers` copy has
+  tests on a virtual clock (`testing/synctest`) with exact timing assertions
+  that the other four lack, which makes it the natural source if the helper is
+  promoted.
+- Each attempt now also carries a `Nats-Msg-Id` shared across the retries of
+  one logical publish (ADL 0015), and an unlimited client reconnect means a
+  publish whose retries were exhausted can still arrive later if the process
+  survives (ADL 0011 addendum). Neither changes the outbox question: it is
+  still open and is to be settled before `payments` starts.

@@ -9,11 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-var (
-	ErrProductNotFound        = errors.New("product not found in catalog")
-	ErrPriceAdjustmentSkipped = errors.New("price adjustment skipped: already applied or product not found")
-)
-
 type CatalogRepository struct {
 	db Executor
 }
@@ -90,23 +85,46 @@ func (r *CatalogRepository) SetStoreParticipation(ctx context.Context, id string
 
 // CreateProduct will add a new product to the catalog_products based on the
 // CreateProduct event published  to the stream.
-func (r *CatalogRepository) CreateProduct(ctx context.Context, id, storeID, name, description, sku string, price float64) error {
+func (r *CatalogRepository) CreateProduct(ctx context.Context, id, storeID, name, description, sku string, price float64, seq uint64) error {
 
 	stmt := `
-	INSERT INTO catalog_products (id, store_id, name, description, sku, price)
-	VALUES ($1, $2, $3, $4, $5, $6)
+	INSERT INTO catalog_products (id, store_id, name, description, sku, price, last_applied_seq)
+	VALUES ($1, $2, $3, $4, $5, $6, $7)
 	ON CONFLICT (id) DO UPDATE SET
 		store_id = EXCLUDED.store_id,
 		name = EXCLUDED.name,
 		description = EXCLUDED.description,
 		sku = EXCLUDED.sku,
-		price = EXCLUDED.price
+		price = EXCLUDED.price,
+		last_applied_seq = EXCLUDED.last_applied_seq
+	WHERE catalog_products.last_applied_seq < EXCLUDED.last_applied_seq
 	`
 
 	exec := executorFrom(ctx, r.db)
 
-	if _, err := exec.Exec(ctx, stmt, id, storeID, name, description, sku, price); err != nil {
+	if _, err := exec.Exec(ctx, stmt, id, storeID, name, description, sku, price, seq); err != nil {
 		return fmt.Errorf("creating catalog product %q: %w", id, err)
+	}
+
+	return nil
+}
+
+func (r *CatalogRepository) SetProductPrice(ctx context.Context, id string, price float64, seq uint64) error {
+
+	stmt := `
+	UPDATE catalog_products SET price = $2, last_applied_seq = $3
+	WHERE id = $1 AND last_applied_seq < $3
+	`
+
+	exec := executorFrom(ctx, r.db)
+
+	tag, err := exec.Exec(ctx, stmt, id, price, seq)
+	if err != nil {
+		return fmt.Errorf("setting catalog product price %q: %w", id, err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return catalog.ErrPriceAdjustmentSkipped
 	}
 
 	return nil
@@ -148,8 +166,12 @@ func (r *CatalogRepository) AdjustProductPrice(ctx context.Context, id string, d
 		return fmt.Errorf("adjusting catalog product price %q: %w", id, err)
 	}
 
+	// verify if there was any row change
 	if tag.RowsAffected() == 0 {
-		return ErrPriceAdjustmentSkipped
+		// here there are now two possibilities on why the price was not ajusted:
+		// 1) Product does not exist: then return ErrProductNotFound
+		// 2) Price was already adjusted on a previous occasion: then return ErrPriceAdjustmentSkipped
+		return r.whyNoRowChanged(ctx, exec, id)
 	}
 
 	return nil
@@ -240,4 +262,28 @@ func (r *CatalogRepository) FindStoreIDsByProductIDs(ctx context.Context, produc
 	}
 
 	return storeIDs, nil
+}
+
+// ----------------------------------------------------------------------------
+//
+
+// verify if a catalog product exists int the database by consulting it's id.
+func (r *CatalogRepository) whyNoRowChanged(ctx context.Context, exec Executor, id string) error {
+
+	var exists bool
+
+	err := exec.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM catalog_products WHERE id = $1)`, id).Scan(&exists)
+	if err != nil {
+		return fmt.Errorf("checking catalog product %q: %w", id, err)
+	}
+
+	// if product doesn't exist, return the sentinel ErrProductNotFound
+	if !exists {
+		return fmt.Errorf("catalog product %q: %w", id, catalog.ErrProductNotFound)
+	}
+
+	// when a product exists, then we don't want apply a price adjustment again,
+	// when calling AdjustProductPrice.
+	// We simply return an error to skip the price adjustment.
+	return catalog.ErrPriceAdjustmentSkipped
 }

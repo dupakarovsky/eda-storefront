@@ -1,42 +1,100 @@
-<!-- docs/system-state.md -->
-
 # System State
 
 The single source of truth for "what's actually running right now." Updated at
-the start and end of every project — see `docs/roadmap.md` for the working
+the start and end of every project. See `docs/roadmap.md` for the working
 agreement around this.
 
-Last updated: 2026-09-30 (`ordering` Phase 7 complete — fully containerized, all seven Phases done)
+Events published and consumed, and API surfaces, are documented in each
+service's `CONTRACT.md`, not here.
 
-| Service                         | Status      | Project Dir              | Publishes                                                                                                                                                                                                                                                              | Consumes                                                                                                                                                                                                                                                                         | Last Updated |
-| ------------------------------- | ----------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| `foundation` (shared package)   | Live        | `foundation/`            | —                                                                                                                                                                                                                                                                      | —                                                                                                                                                                                                                                                                                | 2026-08-30   |
-| `stores`                        | Live        | `stores/`                | `StoreCreated`, `StoreRebranded`, `StoreParticipationEnabled`, `StoreParticipationDisabled`, `ProductAdded`, `ProductRebranded`, `ProductPriceIncreased`, `ProductPriceDecreased`, `ProductRemoved` (projected into a local `catalog_stores`/`catalog_products` cache) | —                                                                                                                                                                                                                                                                                | 2026-08-30   |
-| `depot`                         | Live        | `depot-baskets/depot/`   | `ShoppingListCreated`, `ItemAdded`, `ItemRemoved`, `ShoppingListInitiated`, `ShoppingListCompleted`, `ShoppingListCanceled`                                                                                                                                            | `stores`' `StoreCreated`, `StoreRebranded`, `StoreParticipationEnabled`, `StoreParticipationDisabled`, `ProductAdded`, `ProductRebranded`, `ProductPriceIncreased`, `ProductPriceDecreased`, `ProductRemoved` (projected into a local `catalog_stores`/`catalog_products` cache) | 2026-09-16   |
-| `baskets`                       | Live        | `depot-baskets/baskets/` | `BasketStarted`, `ItemAdded`, `ItemRemoved`, `BasketCheckedOut`, `BasketCanceled`                                                                                                                                                                                      | `stores`' `StoreCreated`, `StoreRebranded`, `StoreParticipationEnabled`, `StoreParticipationDisabled`, `ProductAdded`, `ProductRebranded`, `ProductPriceIncreased`, `ProductPriceDecreased`, `ProductRemoved` (projected into a local `catalog_stores`/`catalog_products` cache) | 2026-09-12   |
-| `ordering`                      | Live        | `ordering/`              | `OrderCreated`, `OrderReadied`, `OrderCanceled`                                                                                                                                                                                                                        | `baskets`' `BasketCheckedOut`; `depot`'s `ShoppingListCompleted`; synchronous ConnectRPC client of `depot` (`CreateShoppingList`/`AddItem`/`GetShoppingList`/`CancelShoppingList`)                                                                                               | 2026-09-30   |
-| `payments`                      | Not started | `payments/`              | TBD                                                                                                                                                                                                                                                                    | `ordering` events                                                                                                                                                                                                                                                                | —            |
-| `customers`                     | Not started | `customers/`             | `CustomerRegistered`, `CustomerSmsChanged`                                                                                                                                                                                                                             | —                                                                                                                                                                                                                                                                                | —            |
-| `storefront` (Templ + Datastar) | Not started | `storefront/`            | — (frontend)                                                                                                                                                                                                                                                           | `stores`, `baskets`, `ordering`, `payments`, `customers` (via API + NATS for live updates)                                                                                                                                                                                       | —            |
-| `search`                        | Not started | `search/`                | — (read-only)                                                                                                                                                                                                                                                          | `stores`, `ordering`, `customers` events                                                                                                                                                                                                                                         | —            |
-| `notifications`                 | Not started | `notifications/`         | —                                                                                                                                                                                                                                                                      | `customers`, `ordering` events                                                                                                                                                                                                                                                   | —            |
+Last updated: 2026-10-12 (restructured; `customers` complete: live and
+containerized as of 2026-10-10)
+
+## Services
+
+| Service                         | Status      | Project Dir              | Contract                            | Last Updated |
+| ------------------------------- | ----------- | ------------------------ | ----------------------------------- | ------------ |
+| `foundation` (shared package)   | Live        | `foundation/`            | n/a                                 | 2026-08-30   |
+| `stores`                        | Live        | `stores/`                | `stores/CONTRACT.md`                | 2026-08-30   |
+| `depot`                         | Live        | `depot-baskets/depot/`   | `depot-baskets/depot/CONTRACT.md`   | 2026-09-16   |
+| `baskets`                       | Live        | `depot-baskets/baskets/` | `depot-baskets/baskets/CONTRACT.md` | 2026-09-12   |
+| `ordering`                      | Live        | `ordering/`              | `ordering/CONTRACT.md`              | 2026-09-30   |
+| `customers`                     | Live        | `customers/`             | `customers/CONTRACT.md`             | 2026-10-10   |
+| `payments`                      | Not started | `payments/`              | TBD                                 | n/a          |
+| `storefront` (Templ + Datastar) | Not started | `storefront/`            | n/a (frontend)                      | n/a          |
+| `search`                        | Not started | `search/`                | TBD (read-only)                     | n/a          |
+| `notifications`                 | Not started | `notifications/`         | TBD                                 | n/a          |
 
 ## Infrastructure
 
-| Component            | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| -------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `docker-compose.yml` | Live   | Postgres 17 + NATS 2.12 (JetStream) + `stores` + `baskets` + `depot` + `ordering`, each on a pinned-subnet `eda-net` bridge network, ports bound to `127.0.0.1` only. `ordering` is the first service whose image uses `golang:1.26` rather than `golang:1.25` (required by `go.work`'s own version bump once the workspace reached `1.26.0`) — a deliberate, tracked divergence, not an inconsistency. `ordering` depends on `postgres`/`nats`/`stores`/`baskets`/`depot`, reflecting its status as the system's first fan-in service with two live upstream event sources plus a synchronous RPC dependency. Full stack (all four app services + Postgres + NATS) verified live together via `docker compose up`, including a direct regression test of a full `build`→`down`→`up` cycle with `ordering` now recreated alongside Postgres rather than left running against a stale connection — confirmed clean.                                                                                                                                                                                                                                                                                              |
-| NATS (JetStream)     | Live   | `EnsureStream` uses explicit `FileStorage`; durability across container restart confirmed. **No Docker healthcheck** — `nats:2.12`'s official image has no shell or utilities capable of running one (confirmed by direct experimentation); startup-ordering safety instead comes from `foundation/nats`'s `RetryOnFailedConnect(true)`, which also covers NATS restarting independently of `stores`, something a healthcheck-gated `depends_on` alone would never help with. Every publisher now attaches a per-call Nats-Msg-Id, reusing the same ID across all retry attempts of one logical publish (ADL 0015) — relying on each stream's default 2-minute Duplicate Window to collapse retry-driven duplicate arrivals into a single stored message. Discovered via baskets' Phase 3 NATS-restart retry test (a real stream-content check revealed 3 stored messages for what should have been 1 logical publish), backported to stores the same day. Every service's dead-letter stream subject now uses the `>` wildcard rather than `*` (fixed system-wide during `ordering`'s Phase 5, after the mismatch surfaced first in `ordering`'s own stream and was traced to the same root cause everywhere). |
-| Postgres             | Live   | Hardened baseline per ADL 0006. `edadb` (foundation smoke-testing), `storesdb`, `basketsdb`, `depotdb`, and `orderingdb` all live on this instance; one database per service as each is added. Real `pg_isready`-based Docker healthcheck gates `depends_on` for every dependent service. `docker-entrypoint-initdb.d/` scripts (`03`–`06`) only run automatically against a genuinely fresh volume — on this project's own long-lived `pg-data` volume, each new service's database/role/privilege setup had to be applied manually once, per the same workaround ADL 0006 already documented for `init.sh`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| `Makefile`           | Live   | Reorganized into deployment (`up`/`down`/`build`/`logs`/`ps`, migrations) vs. development-only (`stores/run`, `baskets/run`, `depot/run`, `foundation/smoke`, `storesdb/dev`/`basketsdb/dev`/`depotdb/dev`/`orderingdb/dev`) sections. Each service's `/run` target remains a fast local-iteration path (bare `go run`, not containerized).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+### docker-compose.yaml
+
+- Postgres 17 and NATS 2.12 (JetStream), plus five app services: `stores`
+  (host port 8080), `baskets` (8081), `depot` (8082), `ordering` (8083) and
+  `customers` (8084). Every host port is bound to `127.0.0.1` only.
+- All services sit on the `eda-net` bridge network with a pinned subnet
+  (`172.18.0.0/16`), which the Postgres HBA rules reference (ADL 0006).
+- `customers` is a root service and depends only on `postgres` and `nats`.
+  `ordering` depends on `postgres`, `nats`, `stores`, `baskets` and `depot`.
+- `ordering` and `customers` build with `golang:1.26`, required by `go.work`'s
+  own version; earlier services were recorded as `golang:1.25`.
+- Verified live: all five app services together via `make build`, `down`,
+  `up`, plus a 15s NATS outage with all five staying healthy.
+
+### NATS (JetStream)
+
+- Streams use explicit `FileStorage`; durability across container restart is
+  confirmed.
+- No Docker healthcheck: `nats:2.12` ships no shell or utilities (ADL 0011).
+  Startup safety comes from `RetryOnFailedConnect(true)` in `foundation/nats`.
+- Client reconnect is unlimited by default (`NATS_MAX_RECONNECTS` = -1 in
+  `foundation/config`; ADL 0011 addendum). Previously an outage over ~10s
+  permanently closed every service's connection while the process kept running.
+- Every publisher attaches a per-call `Nats-Msg-Id`, reused across all retries
+  of one logical publish (ADL 0015), relying on each stream's 2-minute
+  Duplicate Window.
+- Every service's dead-letter subject uses the `>` wildcard, not `*`.
+
+### Postgres
+
+- `edadb` is the administration database. The container was created with it
+  in place of the default `postgres` database, and the superuser `edasuper`
+  connects to it to create the per-service databases. No service uses it.
+- One database per service: `storesdb`, `basketsdb`, `depotdb`, `orderingdb`,
+  `customersdb`.
+- Hardened baseline per ADL 0006.
+- A real `pg_isready` healthcheck gates `depends_on` for every dependent
+  service.
+- `docker-entrypoint-initdb.d/` scripts (`03` to `07`) only run on a fresh
+  volume. On the long-lived `pg-data` volume, each new service's database,
+  role and privilege setup was applied manually once.
+
+### Makefile
+
+<!-- docs/system-state.md: Makefile section, replace the development targets bullet -->
+
+- Development targets: `<service>/run` (a bare `go run` for fast local
+  iteration, not containerized), `<service>db/dev`, `nats/baskets` and
+  `format`.
+- Development targets: `<service>/run` (a bare `go run` for fast local
+  iteration, not containerized), `<service>db/dev`, `foundation/smoke`,
+  `nats/baskets` and `format`.
+- Per-service `logs/<service>` and `kill/<service>` exist for every app
+  service. Note: `kill/<service>` sends SIGTERM through Docker, which Docker
+  treats as a manual stop, so `restart: unless-stopped` does not apply: the
+  container stays down, including after a daemon restart, until started
+  manually. Crash recovery (the process dying without Docker's involvement)
+  has not been tested.
 
 ## How to update this file
 
-At the **start** of a project: confirm every service listed as a live dependency
-in `docs/roadmap.md`'s project table is actually marked "Live" here before
+At the **start** of a project: confirm every service listed as a live
+dependency in `docs/roadmap.md`'s project table is marked "Live" here before
 beginning. If it isn't, stop and reconcile before writing any code.
 
-At the **end** of a project: flip the new service(s) from "Not started" (or "In
-progress") to "Live," fill in real published/consumed event names (the TBD
-placeholders above are guesses from the source book, not commitments), and
-update "Last Updated" for every row that changed.
+At the **end** of a project: flip the new service(s) to "Live," update the
+"Last Updated" cell for every row that changed, and set the "Last updated"
+line at the top.
+
+Infrastructure notes are short bullets under their component. Append a bullet;
+never grow a table cell.

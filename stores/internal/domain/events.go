@@ -133,6 +133,7 @@ func (ProductRebranded) EventName() string {
 type ProductPriceIncreased struct {
 	eventBase
 	Delta float64
+	Price float64 // new
 }
 
 func (ProductPriceIncreased) EventName() string {
@@ -146,6 +147,7 @@ func (ProductPriceIncreased) EventName() string {
 type ProductPriceDecreased struct {
 	eventBase
 	Delta float64
+	Price float64 // new
 }
 
 func (ProductPriceDecreased) EventName() string {

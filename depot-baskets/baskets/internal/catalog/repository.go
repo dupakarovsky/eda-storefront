@@ -8,7 +8,7 @@ import (
 
 var (
 	ErrProductNotFound        = errors.New("product not found in catalog")
-	ErrPriceAdjustmentSkipped = errors.New("price adjustment skipped: already applied or product not found")
+	ErrPriceAdjustmentSkipped = errors.New("price adjustment skipped: already applied")
 )
 
 // Repository defines the behavior a concrete must have to access the
@@ -20,7 +20,8 @@ type Repository interface {
 	SetStoreParticipation(ctx context.Context, id string, participating bool) error
 
 	// --- product ---
-	CreateProduct(ctx context.Context, id, storeID, name, description, sku string, price float64) error
+	CreateProduct(ctx context.Context, id, storeID, name, description, sku string, price float64, seq uint64) error
+	SetProductPrice(ctx context.Context, id string, price float64, seq uint64) error
 	RebrandProduct(ctx context.Context, id, name, description string) error
 	AdjustProductPrice(ctx context.Context, id string, delta float64, seq uint64) error
 	DeleteProduct(ctx context.Context, id string) error

@@ -105,3 +105,22 @@ supplement.
   published contract (e.g. a genuine reason to read its domain logic), that
   is itself worth surfacing explicitly rather than defaulting to re-upload —
   likely a sign the contract boundary was drawn in the wrong place.
+
+## Consequences (addendum, 2026-10-15)
+
+- The Decision above covers projects that build a new service on top of live
+  ones: only `CONTRACT.md` (plus `.proto` files) travels forward. It did not
+  anticipate a project that modifies live services. `contract-evolution`
+  (ADL 0020) changes `stores`, `baskets`, `depot` and `ordering`, so for those
+  services the source is a real dependency, not reference material, and the
+  full source of every modified service is attached.
+- Services a modifying project does not change still travel as contract only.
+  `customers` is the example: `ordering` will import `customerspb`, so the
+  generated `customerspb` package is attached too, on the same reasoning that
+  applies to `foundation/` and to `.proto` files adopted for code generation
+  (ADL 0017).
+- `journey_progress.md` is unchanged by this: it stays local to its project.
+  A modifying project's progress log lives in its own folder
+  (`contract-evolution/journey_progress.md`), and each modified service's
+  `CONTRACT.md` is updated in the same phase that changes its contract, as
+  the Consequences above already require.
